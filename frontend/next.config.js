@@ -1,4 +1,7 @@
 /** @type {import('next').NextConfig} */
+const rawApi = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:4000";
+const cleanApi = rawApi.replace(/\/api\/?$/, "").replace(/\/+$/, "");
+
 const nextConfig = {
   images: {
     remotePatterns: [
@@ -8,10 +11,9 @@ const nextConfig = {
     ],
   },
   async rewrites() {
-    const api = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:4000";
     return [
-      { source: "/uploads/:path*", destination: `${api}/uploads/:path*` },
-      { source: "/api/:path*", destination: `${api}/api/:path*` },
+      { source: "/uploads/:path*", destination: `${cleanApi}/uploads/:path*` },
+      { source: "/api/:path*", destination: `${cleanApi}/api/:path*` },
     ];
   },
 };
