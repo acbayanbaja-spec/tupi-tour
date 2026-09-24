@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ring: 142 40% 24%;
+}
+
+html,
+body {
+  background: #f6f1e7;
+  color: #14231c;
+}
+
+*:focus-visible {
+  outline: 2px solid #1c3d2e;
+  outline-offset: 3px;
+}
+
+.skeleton {
+  @apply animate-pulse rounded-xl bg-forest/10;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

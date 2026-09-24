@@ -1,0 +1,9 @@
+{
+  "name": "Tupi Tour",
+  "short_name": "Tupi Tour",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f1e7",
+  "theme_color": "#1c3d2e",
+  "description": "Discover tourist spots in Tupi, South Cotabato."
+}
