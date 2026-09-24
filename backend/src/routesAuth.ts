@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import { randomBytes } from "crypto";
-import { Router } from "express";
+import { type Request, type Response, Router } from "express";
 import { z } from "zod";
 import { requireAuth, signAccess, signRefresh, type AuthedRequest } from "./auth.js";
 import { config } from "./config.js";
@@ -8,7 +8,7 @@ import { hashToken, store } from "./store.js";
 
 export const authRouter = Router();
 
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", async (req: Request, res: Response) => {
   const parsed = z
     .object({
       email: z.string().email(),
@@ -31,7 +31,7 @@ authRouter.post("/register", async (req, res) => {
   res.status(201).json({ user: store.publicUser(user), ...tokens });
 });
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", async (req: Request, res: Response) => {
   const parsed = z.object({ email: z.string().email(), password: z.string() }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Email and password are required." });
   const user = store.findUserByEmail(parsed.data.email);
@@ -42,7 +42,7 @@ authRouter.post("/login", async (req, res) => {
   res.json({ user: store.publicUser(user), ...issue(user.id) });
 });
 
-authRouter.post("/refresh", (req, res) => {
+authRouter.post("/refresh", (req: Request, res: Response) => {
   const token = String(req.body?.refreshToken || "");
   const row = store.findRefresh(hashToken(token));
   if (!row || new Date(row.expiresAt) < new Date()) return res.status(401).json({ error: "Session expired. Please sign in again." });
@@ -52,18 +52,18 @@ authRouter.post("/refresh", (req, res) => {
   res.json({ user: store.publicUser(user), ...issue(user.id) });
 });
 
-authRouter.post("/logout", requireAuth, (req: AuthedRequest, res) => {
+authRouter.post("/logout", requireAuth, (req: AuthedRequest, res: Response) => {
   const token = String(req.body?.refreshToken || "");
   if (token) store.revokeRefresh(hashToken(token));
   res.json({ ok: true });
 });
 
-authRouter.get("/me", requireAuth, (req: AuthedRequest, res) => {
+authRouter.get("/me", requireAuth, (req: AuthedRequest, res: Response) => {
   const user = store.findUserById(req.user!.id);
   res.json({ user: user ? store.publicUser(user) : null });
 });
 
-authRouter.post("/forgot-password", (req, res) => {
+authRouter.post("/forgot-password", (req: Request, res: Response) => {
   const email = String(req.body?.email || "");
   const user = store.findUserByEmail(email);
   if (!user) return res.json({ ok: true });
@@ -74,7 +74,7 @@ authRouter.post("/forgot-password", (req, res) => {
   res.json(payload);
 });
 
-authRouter.post("/reset-password", async (req, res) => {
+authRouter.post("/reset-password", async (req: Request, res: Response) => {
   const parsed = z.object({ token: z.string(), password: z.string().min(8) }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Reset token and a new password are required." });
   const row = store.consumeReset(hashToken(parsed.data.token));

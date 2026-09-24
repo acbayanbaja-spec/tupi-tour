@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { Router } from "express";
+import { type Request, type Response, Router } from "express";
 import multer from "multer";
 import path from "path";
 import { z } from "zod";
@@ -389,20 +389,20 @@ api.get("/owner/dashboard", requireAuth, requireRole("owner", "admin"), (req: Au
   });
 });
 
-api.post("/uploads", requireAuth, upload.single("file"), (req, res) => {
+api.post("/uploads", requireAuth, upload.single("file"), (req: AuthedRequest, res: Response) => {
   if (!req.file) return res.status(400).json({ error: "Choose an image to upload." });
   res.json({ url: `/uploads/${path.basename(req.file.path)}`, originalName: req.file.originalname });
 });
 
-api.get("/admin/overview", requireAuth, requireRole("admin"), (_req, res) => {
+api.get("/admin/overview", requireAuth, requireRole("admin"), (_req: AuthedRequest, res: Response) => {
   res.json(store.analytics());
 });
 
-api.get("/admin/spots", requireAuth, requireRole("admin"), (_req, res) => {
+api.get("/admin/spots", requireAuth, requireRole("admin"), (_req: AuthedRequest, res: Response) => {
   res.json({ spots: store.spots("all") });
 });
 
-api.post("/admin/spots/:id/status", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+api.post("/admin/spots/:id/status", requireAuth, requireRole("admin"), (req: AuthedRequest, res: Response) => {
   const spot = store.getSpot(req.params.id);
   if (!spot) return res.status(404).json({ error: "Spot not found." });
   const status = String(req.body?.status || "");
@@ -414,7 +414,7 @@ api.post("/admin/spots/:id/status", requireAuth, requireRole("admin"), (req: Aut
   res.json({ spot });
 });
 
-api.post("/admin/spots/:id/feature", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+api.post("/admin/spots/:id/feature", requireAuth, requireRole("admin"), (req: AuthedRequest, res: Response) => {
   const spot = store.getSpot(req.params.id);
   if (!spot) return res.status(404).json({ error: "Spot not found." });
   spot.featured = Boolean(req.body?.featured);
@@ -422,26 +422,26 @@ api.post("/admin/spots/:id/feature", requireAuth, requireRole("admin"), (req: Au
   res.json({ spot });
 });
 
-api.get("/admin/owners", requireAuth, requireRole("admin"), (_req, res) => {
+api.get("/admin/owners", requireAuth, requireRole("admin"), (_req: AuthedRequest, res: Response) => {
   res.json({ applications: store.ownerApps(), owners: store.listUsers("owner") });
 });
 
-api.post("/admin/owners/:id/status", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+api.post("/admin/owners/:id/status", requireAuth, requireRole("admin"), (req: AuthedRequest, res: Response) => {
   const app = store.setOwnerApp(req.params.id, String(req.body?.status || ""));
   if (!app) return res.status(404).json({ error: "Application not found." });
   store.audit(req.user!.id, "owner-status", { id: app.id, status: app.status });
   res.json({ application: app });
 });
 
-api.get("/admin/reviews", requireAuth, requireRole("admin"), (_req, res) => {
+api.get("/admin/reviews", requireAuth, requireRole("admin"), (_req: AuthedRequest, res: Response) => {
   res.json({ reviews: store.allReviews(), reports: store.reports() });
 });
 
-api.post("/admin/reviews/:id/hide", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+api.post("/admin/reviews/:id/hide", requireAuth, requireRole("admin"), (req: AuthedRequest, res: Response) => {
   res.json({ review: store.hideReview(req.params.id) });
 });
 
-api.post("/admin/rewards", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+api.post("/admin/rewards", requireAuth, requireRole("admin"), (req: AuthedRequest, res: Response) => {
   const parsed = z
     .object({
       id: z.string().optional(),
@@ -464,17 +464,17 @@ api.post("/admin/rewards", requireAuth, requireRole("admin"), (req: AuthedReques
   res.json({ reward });
 });
 
-api.get("/admin/users", requireAuth, requireRole("admin"), (_req, res) => {
+api.get("/admin/users", requireAuth, requireRole("admin"), (_req: AuthedRequest, res: Response) => {
   res.json({ users: store.listUsers().map((u) => store.publicUser(u)) });
 });
 
-api.post("/admin/categories", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+api.post("/admin/categories", requireAuth, requireRole("admin"), (req: AuthedRequest, res: Response) => {
   const parsed = z.object({ id: z.string().optional(), slug: z.string(), name: z.string(), description: z.string(), icon: z.string() }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Category fields are incomplete." });
   res.json({ category: store.upsertCategory(parsed.data) });
 });
 
-api.get("/profile/summary", requireAuth, (req: AuthedRequest, res) => {
+api.get("/profile/summary", requireAuth, (req: AuthedRequest, res: Response) => {
   const user = store.findUserById(req.user!.id)!;
   res.json({
     user: store.publicUser(user),

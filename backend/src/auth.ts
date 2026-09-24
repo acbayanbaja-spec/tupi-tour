@@ -6,6 +6,9 @@ import type { Role, User } from "./types.js";
 
 export interface AuthedRequest extends Request {
   user?: ReturnType<typeof store.publicUser> & { role: Role; id: string };
+  params: any;
+  body: any;
+  query: any;
 }
 
 export function signAccess(user: User) {
