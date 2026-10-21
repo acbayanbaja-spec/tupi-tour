@@ -118,6 +118,10 @@ export const store = {
     return target().updateSpotVerification(id, status, verifiedBy);
   },
 
+  async deleteSpot(id: string): Promise<boolean> {
+    return target().deleteSpot(id);
+  },
+
   async toggleFavorite(userId: string, spotId: string): Promise<{ saved: boolean }> {
     return target().toggleFavorite(userId, spotId);
   },

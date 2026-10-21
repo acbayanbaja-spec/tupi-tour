@@ -249,6 +249,16 @@ export const fallbackStore = {
     return spot;
   },
 
+  async deleteSpot(id: string): Promise<boolean> {
+    const idx = memory.spots.findIndex((s) => s.id === id);
+    if (idx >= 0) {
+      memory.spots.splice(idx, 1);
+      persist();
+      return true;
+    }
+    return false;
+  },
+
   async toggleFavorite(userId: string, spotId: string): Promise<{ saved: boolean }> {
     const existing = memory.favorites.find((f) => f.userId === userId && f.spotId === spotId);
     if (existing) {

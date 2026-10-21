@@ -273,6 +273,33 @@ function RewardsPortal() {
         {/* Tab 1: Catalog */}
         {activeTab === "catalog" && (
           <div className="space-y-6">
+            {/* How to Earn Points Guide */}
+            <div className="rounded-3xl border border-forest/15 bg-gradient-to-r from-forest to-forest-800 p-6 text-cream shadow-sm">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-gold">Earn & Redeem Loop</span>
+              <h3 className="mt-1 font-serif text-xl font-bold">How to Earn Eco-Points</h3>
+              <p className="mt-1 text-xs text-cream/80">
+                Collect points through active tourism activities in Tupi and redeem them for genuine local souvenirs.
+              </p>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-3 text-xs">
+                <div className="rounded-2xl bg-white/10 p-3.5 backdrop-blur-sm border border-white/15">
+                  <span className="block text-gold font-bold text-base">+50 pts</span>
+                  <span className="font-semibold block mt-0.5">Daily Visit Check-in</span>
+                  <span className="text-[11px] text-cream/70 block mt-0.5">Visit Tupi Tour once each day to collect your attendance boost.</span>
+                </div>
+                <div className="rounded-2xl bg-white/10 p-3.5 backdrop-blur-sm border border-white/15">
+                  <span className="block text-gold font-bold text-base">+25 pts</span>
+                  <span className="font-semibold block mt-0.5">Verified Spot Review</span>
+                  <span className="text-[11px] text-cream/70 block mt-0.5">Leave an honest review and rating on any accredited Tupi spot.</span>
+                </div>
+                <div className="rounded-2xl bg-white/10 p-3.5 backdrop-blur-sm border border-white/15">
+                  <span className="block text-gold font-bold text-base">+100 pts</span>
+                  <span className="font-semibold block mt-0.5">Custom Trip Planner</span>
+                  <span className="text-[11px] text-cream/70 block mt-0.5">Build and save your custom itinerary in the AI Planner.</span>
+                </div>
+              </div>
+            </div>
+
             <div>
               <h2 className="font-serif text-2xl font-bold text-forest">Redeem Local Tupi Rewards</h2>
               <p className="text-xs text-forest/70">

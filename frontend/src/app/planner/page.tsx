@@ -28,7 +28,19 @@ type Itinerary = {
   assumptions: string[];
   schedule: { time: string; title: string; kind: string; minutes: number; note: string; spot?: Spot }[];
   alternatives: Spot[];
-  budget: { estimated: boolean; transportation: number; food: number; entranceFees: number; other: number; total: number; withinBudget: boolean; note: string };
+  budget: {
+    estimated: boolean;
+    transportation: number;
+    food: number;
+    entranceFees: number;
+    other: number;
+    total: number;
+    withinBudget: boolean;
+    remainingBudget?: number;
+    deficit?: number;
+    suggestions?: string[];
+    note: string;
+  };
   aiNotes: string;
 };
 
@@ -339,8 +351,26 @@ export default function PlannerPage() {
 
             {/* Estimated Budget Cards */}
             <div className="rounded-3xl border border-forest/10 bg-white p-6 shadow-sm">
-              <h3 className="font-serif text-xl font-bold text-forest">Budget Estimation</h3>
-              <p className="text-xs text-forest/60">{plan.budget.note}</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-serif text-xl font-bold text-forest">Budget Estimation</h3>
+                  <p className="text-xs text-forest/60">{plan.budget.note}</p>
+                </div>
+                <div>
+                  {plan.budget.withinBudget ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">
+                      ✓ Within Target Budget
+                      {plan.budget.remainingBudget != null && plan.budget.remainingBudget > 0 && (
+                        <span>(₱{plan.budget.remainingBudget.toLocaleString()} remaining)</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
+                      ⚠️ Exceeds Target by ₱{(plan.budget.deficit || 0).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              </div>
 
               <div className="mt-4 grid gap-4 sm:grid-cols-4">
                 <div className="rounded-2xl bg-cream/70 p-4">
@@ -360,7 +390,50 @@ export default function PlannerPage() {
                   <p className="font-serif text-2xl font-bold text-gold">₱{plan.budget.total.toLocaleString()}</p>
                 </div>
               </div>
+
+              {/* Actionable Budget Suggestions */}
+              {plan.budget.suggestions && plan.budget.suggestions.length > 0 && (
+                <div className="mt-4 rounded-2xl bg-amber-50/80 p-4 border border-amber-200">
+                  <span className="text-xs font-bold uppercase tracking-wider text-amber-900 block mb-1">
+                    Smart Cost-Saving Recommendations
+                  </span>
+                  <ul className="list-disc pl-4 space-y-1 text-xs text-amber-950/85">
+                    {plan.budget.suggestions.map((s, idx) => (
+                      <li key={idx}>{s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
+
+            {/* Alternative Recommended Spots in Tupi */}
+            {plan.alternatives && plan.alternatives.length > 0 && (
+              <div className="rounded-3xl border border-forest/10 bg-white p-6 shadow-sm">
+                <h3 className="font-serif text-xl font-bold text-forest">Alternative & Nearby Stops</h3>
+                <p className="text-xs text-forest/60 mb-4">
+                  Consider these nearby spots if you have extra time or want to adjust your itinerary:
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                  {plan.alternatives.map((alt) => (
+                    <Link
+                      key={alt.id}
+                      href={`/spots/${alt.slug}`}
+                      target="_blank"
+                      className="group rounded-2xl border border-forest/10 bg-cream/40 p-3 hover:bg-cream transition flex flex-col justify-between"
+                    >
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-moss">Brgy. {alt.barangay}</span>
+                        <h4 className="font-serif text-sm font-bold text-forest group-hover:text-emerald-800 transition">
+                          {alt.name}
+                        </h4>
+                        <p className="text-[11px] text-forest/70 line-clamp-2 mt-1">{alt.shortDescription}</p>
+                      </div>
+                      <span className="mt-2 text-[10px] font-semibold text-emerald-700">Explore destination →</span>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* AI Guide Notes */}
             <div className="rounded-3xl border border-gold/30 bg-amber-50/60 p-6">

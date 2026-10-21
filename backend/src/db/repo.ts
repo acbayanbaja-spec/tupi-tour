@@ -299,6 +299,11 @@ export const pgRepo = {
     return this.getSpot(id);
   },
 
+  async deleteSpot(id: string): Promise<boolean> {
+    const res = await query("DELETE FROM tourist_spots WHERE id = $1 RETURNING id", [id]);
+    return (res.rowCount ?? 0) > 0;
+  },
+
   // --- Favorites ---
   async toggleFavorite(userId: string, spotId: string): Promise<{ saved: boolean }> {
     const check = await query(

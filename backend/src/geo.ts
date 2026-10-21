@@ -11,6 +11,67 @@ export function haversineKm(a: { lat: number; lng: number }, b: { lat: number; l
   return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
 }
 
+export interface RoadRouteResult {
+  provider: "OSRM OpenStreetMap Driving Engine" | "Rural Highland Terrain Fallback";
+  distanceKm: number;
+  durationMinutes: number;
+  geometry: [number, number][]; // [lat, lng] array for Leaflet
+  origin: { lat: number; lng: number };
+  destination: { lat: number; lng: number };
+  note: string;
+}
+
+export async function fetchRoadRoute(
+  origin: { lat: number; lng: number },
+  destination: { lat: number; lng: number }
+): Promise<RoadRouteResult> {
+  const straightDist = haversineKm(origin, destination);
+  const fallbackKm = Number((straightDist * 1.28).toFixed(1));
+  const fallbackMins = Math.max(8, Math.round((fallbackKm / 28) * 60));
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const url = `https://router.project-osrm.org/route/v1/driving/${origin.lng},${origin.lat};${destination.lng},${destination.lat}?overview=full&geometries=geojson`;
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      if (data.code === "Ok" && data.routes?.[0]) {
+        const route = data.routes[0];
+        const rawCoords: [number, number][] = route.geometry.coordinates;
+        const leafletCoords: [number, number][] = rawCoords.map(([lng, lat]) => [lat, lng]);
+
+        return {
+          provider: "OSRM OpenStreetMap Driving Engine",
+          distanceKm: Number((route.distance / 1000).toFixed(1)),
+          durationMinutes: Math.max(5, Math.round(route.duration / 60)),
+          geometry: leafletCoords,
+          origin,
+          destination,
+          note: "Real road route generated using OpenStreetMap road network geometry.",
+        };
+      }
+    }
+  } catch (err) {
+    // Graceful fallback to terrain compensation
+  }
+
+  return {
+    provider: "Rural Highland Terrain Fallback",
+    distanceKm: fallbackKm,
+    durationMinutes: fallbackMins,
+    geometry: [
+      [origin.lat, origin.lng],
+      [destination.lat, destination.lng],
+    ],
+    origin,
+    destination,
+    note: "Terrain-compensated road projection (1.28x factor for Tupi mountain foothills). Live OSRM was unreachable.",
+  };
+}
+
 export async function enrichSpot(spot: TouristSpot, userId?: string, origin?: { lat: number; lng: number }) {
   const cats = await store.categories();
   const rating = await spotRating(spot.id);

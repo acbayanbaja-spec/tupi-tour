@@ -4,22 +4,44 @@ import { useQuery } from "@tanstack/react-query";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import {
+  Car,
+  Clock,
   Compass,
   Crosshair,
   ExternalLink,
   Layers,
   MapPin,
   Navigation,
+  Route as RouteIcon,
   Search,
   Sparkles,
   Star,
+  X,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { MapContainer, Marker, Popup, TileLayer, useMap } from "react-leaflet";
+import { useEffect, useMemo, useState } from "react";
+import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
 import { toast } from "sonner";
 import { api, type Spot } from "@/lib/api";
+
+interface RoadRoute {
+  distanceKm: number;
+  durationMinutes: number;
+  geometry: [number, number][];
+  provider: "osrm" | "tupi-fallback";
+}
+
+function FitRoute({ geometry }: { geometry?: [number, number][] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (geometry && geometry.length > 1) {
+      const bounds = L.latLngBounds(geometry);
+      map.fitBounds(bounds, { padding: [40, 40] });
+    }
+  }, [geometry, map]);
+  return null;
+}
 
 const spotIcon = L.divIcon({
   className: "custom-leaflet-pin",
@@ -47,6 +69,9 @@ export default function MapPage() {
   const [locMsg, setLocMsg] = useState("");
   const [search, setSearch] = useState("");
   const [selectedCat, setSelectedCat] = useState("all");
+
+  const [route, setRoute] = useState<RoadRoute | null>(null);
+  const [routingLoading, setRoutingLoading] = useState(false);
 
   const qs = origin ? `?lat=${origin.lat}&lng=${origin.lng}` : "";
   const data = useQuery({ queryKey: ["map", qs], queryFn: () => api<{ spots: Spot[] }>(`/api/map${qs}`) });
@@ -82,6 +107,27 @@ export default function MapPage() {
         toast.error("Location permission denied");
       }
     );
+  }
+
+  async function calculateRoute(spot: Spot) {
+    setRoutingLoading(true);
+    try {
+      const fromLat = origin ? origin.lat : 6.3347;
+      const fromLng = origin ? origin.lng : 124.9669;
+      const res = await api<RoadRoute>(
+        `/api/routes/directions?fromLat=${fromLat}&fromLng=${fromLng}&toLat=${spot.lat}&toLng=${spot.lng}`
+      );
+      setRoute(res);
+      toast.success(
+        res.provider.includes("OSRM")
+          ? `OSRM Road Route: ${res.distanceKm} km (~${res.durationMinutes} mins)`
+          : `Highland Route: ${res.distanceKm} km (~${res.durationMinutes} mins)`
+      );
+    } catch (err: any) {
+      toast.error(err.message || "Failed to calculate road route");
+    } finally {
+      setRoutingLoading(false);
+    }
   }
 
   function launchDirections(spot: Spot) {
@@ -129,6 +175,16 @@ export default function MapPage() {
               </Popup>
             </Marker>
           ))}
+
+          {route && route.geometry && route.geometry.length > 0 && (
+            <>
+              <Polyline
+                positions={route.geometry}
+                pathOptions={{ color: "#10b981", weight: 5, opacity: 0.9 }}
+              />
+              <FitRoute geometry={route.geometry} />
+            </>
+          )}
         </MapContainer>
 
         {/* Floating Quick Locate Button */}
@@ -154,6 +210,52 @@ export default function MapPage() {
           </div>
 
           {locMsg && <p className="text-[11px] text-moss bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">{locMsg}</p>}
+
+          {/* Active Calculated Route Details Card */}
+          {route && (
+            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-50/70 p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-950">
+                  <RouteIcon size={14} className="text-emerald-700" />
+                  <span>Calculated Road Navigation</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setRoute(null)}
+                  className="rounded-full p-1 text-emerald-800 hover:bg-emerald-200/50"
+                  aria-label="Clear Route"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-xl bg-white p-2.5 border border-emerald-100 flex items-center gap-2">
+                  <Navigation size={15} className="text-emerald-700" />
+                  <div>
+                    <span className="block text-[10px] text-forest/60">Distance</span>
+                    <span className="font-bold text-forest">{route.distanceKm} km</span>
+                  </div>
+                </div>
+                <div className="rounded-xl bg-white p-2.5 border border-emerald-100 flex items-center gap-2">
+                  <Clock size={15} className="text-emerald-700" />
+                  <div>
+                    <span className="block text-[10px] text-forest/60">Est. Time</span>
+                    <span className="font-bold text-forest">~{route.durationMinutes} mins</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-[10px] text-forest/70 pt-0.5">
+                <span>
+                  Origin: {origin ? "Your Current GPS" : "Tupi Municipal Hall"}
+                </span>
+                <span className="rounded-full bg-emerald-200/70 px-2 py-0.5 font-bold text-emerald-900">
+                  {route.provider.includes("OSRM") ? "OSRM Real Roads" : "Highland Model"}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Search Input */}
           <div className="relative">
@@ -222,16 +324,32 @@ export default function MapPage() {
               <div className="grid grid-cols-2 gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => launchDirections(selected)}
-                  className="flex items-center justify-center gap-1.5 rounded-full bg-gold py-2 text-xs font-bold text-forest hover:bg-gold-600 transition"
+                  onClick={() => calculateRoute(selected)}
+                  disabled={routingLoading}
+                  className="flex items-center justify-center gap-1.5 rounded-full bg-forest py-2 text-xs font-bold text-cream hover:bg-forest-800 transition disabled:opacity-60 shadow-sm"
                 >
-                  <Navigation size={13} /> Open Directions
+                  {routingLoading ? (
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-cream border-t-transparent" />
+                  ) : (
+                    <RouteIcon size={13} className="text-gold" />
+                  )}
+                  <span>Calculate Road Route</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => launchDirections(selected)}
+                  className="flex items-center justify-center gap-1.5 rounded-full bg-gold py-2 text-xs font-bold text-forest hover:bg-gold-600 transition shadow-sm"
+                >
+                  <Navigation size={13} /> External GPS
+                </button>
+              </div>
+
+              <div className="pt-1 text-center">
                 <Link
                   href={`/spots/${selected.slug}`}
-                  className="flex items-center justify-center gap-1 rounded-full border border-forest/20 bg-cream/60 py-2 text-xs font-semibold text-forest hover:bg-cream"
+                  className="inline-flex items-center justify-center gap-1 text-xs font-semibold text-moss hover:underline"
                 >
-                  Full Details <ExternalLink size={12} />
+                  Full Destination Details <ExternalLink size={12} />
                 </Link>
               </div>
             </div>

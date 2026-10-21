@@ -7,7 +7,7 @@ import { optionalAuth, requireAuth, requireRole, type AuthedRequest } from "./au
 import { chatTupi } from "./chatbot.js";
 import { config } from "./config.js";
 import { checkDbReadiness } from "./db/pool.js";
-import { enrichSpot, enrichSpots, haversineKm, recommend, searchSpots } from "./geo.js";
+import { enrichSpot, enrichSpots, fetchRoadRoute, haversineKm, recommend, searchSpots } from "./geo.js";
 import { buildItinerary } from "./itinerary.js";
 import { spotRating, store } from "./store.js";
 import type { SavedRoute, TouristSpot, VerificationStatus } from "./types.js";
@@ -205,6 +205,70 @@ api.get("/weather", async (_req, res) => {
     });
   }
   res.json(forecast);
+});
+
+// Feature 2: Real Road Routing Navigation via OSRM with Mountain Fallback
+api.get("/routes/directions", optionalAuth, async (req: Request, res: Response) => {
+  const fromLat = req.query.fromLat ? Number(req.query.fromLat) : 6.3347;
+  const fromLng = req.query.fromLng ? Number(req.query.fromLng) : 124.9669;
+  let toLat = req.query.toLat ? Number(req.query.toLat) : null;
+  let toLng = req.query.toLng ? Number(req.query.toLng) : null;
+
+  if (req.query.spotId) {
+    const spot = await store.getSpot(String(req.query.spotId));
+    if (spot) {
+      toLat = spot.lat;
+      toLng = spot.lng;
+    }
+  }
+
+  if (toLat == null || toLng == null || isNaN(fromLat) || isNaN(fromLng) || isNaN(toLat) || isNaN(toLng)) {
+    return res.status(400).json({ error: "Valid origin (fromLat, fromLng) and destination (toLat, toLng or spotId) are required." });
+  }
+
+  const route = await fetchRoadRoute({ lat: fromLat, lng: fromLng }, { lat: toLat, lng: toLng });
+  res.json(route);
+});
+
+// Feature 3: Nearby Tourist Spot Discovery
+api.get("/spots/nearby", optionalAuth, async (req: Request, res: Response) => {
+  const lat = req.query.lat ? Number(req.query.lat) : null;
+  const lng = req.query.lng ? Number(req.query.lng) : null;
+  const radiusKm = req.query.radiusKm ? Number(req.query.radiusKm) : 25;
+  const categoryId = req.query.categoryId ? String(req.query.categoryId) : undefined;
+
+  const allSpots = await store.spots("approved");
+  let filtered = allSpots;
+
+  if (categoryId && categoryId !== "all") {
+    const cats = await store.categories();
+    const matched = cats.find((c) => c.id === categoryId || c.slug === categoryId);
+    const targetCatId = matched ? matched.id : categoryId;
+    filtered = filtered.filter((s) => s.categoryId === targetCatId);
+  }
+
+  if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
+    const origin = { lat, lng };
+    const enriched = await enrichSpots(filtered, (req as AuthedRequest).user?.id, origin);
+    const nearby = enriched
+      .filter((s) => s.distanceKm != null && s.distanceKm <= radiusKm)
+      .sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0));
+
+    return res.json({
+      origin,
+      radiusKm,
+      count: nearby.length,
+      spots: nearby,
+    });
+  }
+
+  const enriched = await enrichSpots(filtered, (req as AuthedRequest).user?.id);
+  res.json({
+    origin: null,
+    radiusKm,
+    count: enriched.length,
+    spots: enriched,
+  });
 });
 
 // Multi-Stop Route Planning & Optimization (Feature 2)
@@ -412,6 +476,10 @@ api.post("/reviews", requireAuth, async (req: AuthedRequest, res) => {
     return res.status(400).json({ error: "Write at least a short review (12+ characters) and a 1–5 rating." });
   }
 
+  // Check if user already reviewed this spot to prevent duplicate point exploitation
+  const existingReviews = await store.reviewsForSpot(parsed.data.spotId);
+  const alreadyReviewed = existingReviews.some((r) => r.userId === req.user!.id);
+
   const review = await store.addReview({
     id: `rev-${randomUUID().slice(0, 8)}`,
     userId: req.user!.id,
@@ -425,9 +493,16 @@ api.post("/reviews", requireAuth, async (req: AuthedRequest, res) => {
     createdAt: new Date().toISOString(),
   });
 
-  await store.addPoints(req.user!.id, 15, "Published a review");
-  await store.audit(req.user!.id, "review", { spotId: parsed.data.spotId });
-  res.status(201).json({ review });
+  // Only award points on the FIRST review of a destination
+  let awarded = false;
+  if (!alreadyReviewed) {
+    await store.addPoints(req.user!.id, 25, `First review for destination ${parsed.data.spotId}`);
+    await store.notify(req.user!.id, "Points Earned! ⭐", "You earned 25 explorer points for writing your first review of this destination.", "reward");
+    awarded = true;
+  }
+
+  await store.audit(req.user!.id, "review", { spotId: parsed.data.spotId, isUpdate: alreadyReviewed });
+  res.status(alreadyReviewed ? 200 : 201).json({ review, pointsAwarded: awarded ? 25 : 0 });
 });
 
 api.post("/reviews/:id/helpful", requireAuth, async (req: AuthedRequest, res) => {
@@ -804,6 +879,128 @@ api.get("/admin/export-csv", requireAuth, requireRole("admin"), async (_req: Aut
 api.get("/admin/spots", requireAuth, requireRole("admin"), async (_req: AuthedRequest, res: Response) => {
   const spots = await store.spots("all");
   res.json({ spots });
+});
+
+const adminSpotSchema = z.object({
+  name: z.string().min(3, "Name must be at least 3 characters"),
+  categoryId: z.string().min(1, "Category is required"),
+  description: z.string().min(20, "Description must be at least 20 characters"),
+  shortDescription: z.string().min(10, "Short description must be at least 10 characters"),
+  lat: z.number().refine((n) => n >= -90 && n <= 90, "Valid latitude required"),
+  lng: z.number().refine((n) => n >= -180 && n <= 180, "Valid longitude required"),
+  address: z.string().min(3, "Address is required"),
+  barangay: z.string().min(2, "Barangay is required"),
+  amenities: z.array(z.string()).default([]),
+  operatingHours: z
+    .object({
+      days: z.string().default("Daily"),
+      hours: z.string().default("8:00 AM - 5:00 PM"),
+      reliability: z.enum(["verified", "owner", "estimated"]).default("verified"),
+    })
+    .optional(),
+  contact: z.string().optional(),
+  featured: z.boolean().default(false),
+  status: z.enum(["approved", "pending", "under_review", "rejected", "draft"]).default("approved"),
+  estimatedEntranceFee: z.number().optional(),
+  safetyGuidance: z.array(z.string()).optional(),
+  emergencyContact: z.string().optional(),
+  images: z.array(z.object({ url: z.string(), alt: z.string() })).default([]),
+});
+
+api.post("/admin/spots", requireAuth, requireRole("admin"), async (req: AuthedRequest, res: Response) => {
+  const parsed = adminSpotSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid destination data." });
+  }
+
+  const slug = parsed.data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-") + "-" + randomUUID().slice(0, 4);
+  const ts = new Date().toISOString();
+  const id = `sp-${randomUUID().slice(0, 8)}`;
+  const data = parsed.data;
+
+  const newSpot: TouristSpot = {
+    id,
+    slug,
+    name: data.name,
+    categoryId: data.categoryId,
+    description: data.description,
+    shortDescription: data.shortDescription,
+    lat: data.lat,
+    lng: data.lng,
+    address: data.address,
+    barangay: data.barangay,
+    amenities: data.amenities,
+    operatingHours: data.operatingHours,
+    contact: data.contact,
+    featured: data.featured,
+    status: data.status,
+    ownerId: undefined,
+    dataSource: "curated",
+    estimatedEntranceFee: data.estimatedEntranceFee,
+    popularityScore: 50,
+    viewCount: 0,
+    visitCount: 0,
+    images: data.images,
+    verificationStatus: "verified",
+    lastVerifiedAt: ts,
+    verifiedBy: req.user!.id,
+    safetyGuidance: data.safetyGuidance || [],
+    emergencyContact: data.emergencyContact,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+
+  const spot = await store.saveSpot(newSpot);
+  await store.audit(req.user!.id, "admin-create-spot", { id: spot.id, name: spot.name });
+  res.status(201).json({ spot });
+});
+
+api.put("/admin/spots/:id", requireAuth, requireRole("admin"), async (req: AuthedRequest, res: Response) => {
+  const existing = await store.getSpot(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Destination not found." });
+
+  const parsed = adminSpotSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message || "Invalid destination data." });
+  }
+
+  const data = parsed.data;
+  const spotToUpdate: TouristSpot = {
+    ...existing,
+    name: data.name,
+    categoryId: data.categoryId,
+    description: data.description,
+    shortDescription: data.shortDescription,
+    lat: data.lat,
+    lng: data.lng,
+    address: data.address,
+    barangay: data.barangay,
+    amenities: data.amenities,
+    operatingHours: data.operatingHours ?? existing.operatingHours,
+    contact: data.contact !== undefined ? data.contact : existing.contact,
+    featured: data.featured,
+    status: data.status,
+    estimatedEntranceFee: data.estimatedEntranceFee !== undefined ? data.estimatedEntranceFee : existing.estimatedEntranceFee,
+    safetyGuidance: data.safetyGuidance ?? existing.safetyGuidance,
+    emergencyContact: data.emergencyContact !== undefined ? data.emergencyContact : existing.emergencyContact,
+    images: data.images,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const updated = await store.saveSpot(spotToUpdate);
+  await store.audit(req.user!.id, "admin-update-spot", { id: existing.id, name: updated.name });
+  res.json({ spot: updated });
+});
+
+api.delete("/admin/spots/:id", requireAuth, requireRole("admin"), async (req: AuthedRequest, res: Response) => {
+  const existing = await store.getSpot(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Destination not found." });
+
+  const ok = await store.deleteSpot(existing.id);
+  if (!ok) return res.status(500).json({ error: "Failed to delete destination." });
+
+  await store.audit(req.user!.id, "admin-delete-spot", { id: existing.id, name: existing.name });
+  res.json({ success: true, id: existing.id });
 });
 
 api.post("/admin/spots/:id/status", requireAuth, requireRole("admin"), async (req: AuthedRequest, res: Response) => {

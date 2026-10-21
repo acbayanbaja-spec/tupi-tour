@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   MapPin,
   MessageSquare,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -21,6 +22,7 @@ import {
   ShieldCheck,
   Sparkles,
   Star,
+  Trash2,
   Users,
   X,
   XCircle,
@@ -325,11 +327,123 @@ function OverviewTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
 function SpotsTab() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingSpot, setEditingSpot] = useState<any | null>(null);
+
+  // Form State
+  const [formName, setFormName] = useState("");
+  const [formCategory, setFormCategory] = useState("");
+  const [formBarangay, setFormBarangay] = useState("Kablon");
+  const [formAddress, setFormAddress] = useState("");
+  const [formLat, setFormLat] = useState<number>(6.3785);
+  const [formLng, setFormLng] = useState<number>(124.9952);
+  const [formShortDesc, setFormShortDesc] = useState("");
+  const [formDesc, setFormDesc] = useState("");
+  const [formFee, setFormFee] = useState<string>("50");
+  const [formOperatingHours, setFormOperatingHours] = useState("Daily, 8:00 AM - 5:00 PM");
+  const [formAmenities, setFormAmenities] = useState("Scenic viewpoint, Parking, Restrooms, Food stalls");
+  const [formContact, setFormContact] = useState("");
+  const [formImageUrl, setFormImageUrl] = useState("");
+  const [formStatus, setFormStatus] = useState("approved");
+
   const q = useQuery({
     queryKey: ["admin-spots"],
     queryFn: () =>
       api<{ spots: (Spot & { categoryId?: string; ownerId?: string })[] }>("/api/admin/spots"),
   });
+
+  const cats = useQuery({
+    queryKey: ["cats"],
+    queryFn: () => api<{ categories: { id: string; slug: string; name: string }[] }>("/api/categories"),
+  });
+
+  function openCreateModal() {
+    setEditingSpot(null);
+    setFormName("");
+    setFormCategory(cats.data?.categories[0]?.id || "cat-agri");
+    setFormBarangay("Kablon");
+    setFormAddress("Sitio Glandang, Barangay Kablon, Tupi, South Cotabato");
+    setFormLat(6.3785);
+    setFormLng(124.9952);
+    setFormShortDesc("Highland agri-tourism farm with scenic Mt. Matutum views.");
+    setFormDesc("Experience strawberry plantings, fresh mountain air, and local produce in the highlands of Tupi.");
+    setFormFee("50");
+    setFormOperatingHours("Daily, 8:00 AM - 5:00 PM");
+    setFormAmenities("Scenic viewpoint, Parking, Restrooms, Food stalls");
+    setFormContact("(083) 228-1000");
+    setFormImageUrl("https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=1600&q=80");
+    setFormStatus("approved");
+    setIsModalOpen(true);
+  }
+
+  function openEditModal(spot: any) {
+    setEditingSpot(spot);
+    setFormName(spot.name || "");
+    setFormCategory(spot.categoryId || cats.data?.categories[0]?.id || "");
+    setFormBarangay(spot.barangay || "Kablon");
+    setFormAddress(spot.address || "");
+    setFormLat(spot.lat);
+    setFormLng(spot.lng);
+    setFormShortDesc(spot.shortDescription || "");
+    setFormDesc(spot.description || "");
+    setFormFee(spot.estimatedEntranceFee != null ? String(spot.estimatedEntranceFee) : "");
+    setFormOperatingHours(
+      spot.operatingHours?.days
+        ? `${spot.operatingHours.days}${spot.operatingHours.hours ? `, ${spot.operatingHours.hours}` : ""}`
+        : "Daily, 8:00 AM - 5:00 PM"
+    );
+    setFormAmenities(Array.isArray(spot.amenities) ? spot.amenities.join(", ") : "");
+    setFormContact(spot.contact || "");
+    setFormImageUrl(spot.images?.[0]?.url || "");
+    setFormStatus(spot.status || "approved");
+    setIsModalOpen(true);
+  }
+
+  async function handleSaveSpot(e: FormEvent) {
+    e.preventDefault();
+    try {
+      const payload = {
+        name: formName,
+        categoryId: formCategory || cats.data?.categories[0]?.id,
+        description: formDesc,
+        shortDescription: formShortDesc,
+        lat: Number(formLat),
+        lng: Number(formLng),
+        address: formAddress,
+        barangay: formBarangay,
+        amenities: formAmenities.split(",").map((s) => s.trim()).filter(Boolean),
+        operatingHours: { days: formOperatingHours, hours: formOperatingHours, reliability: "verified" },
+        contact: formContact || null,
+        featured: editingSpot ? Boolean(editingSpot.featured) : false,
+        status: formStatus,
+        estimatedEntranceFee: formFee.trim() === "" ? null : Number(formFee),
+        images: formImageUrl.trim() ? [{ url: formImageUrl.trim(), alt: formName }] : [],
+      };
+
+      if (editingSpot) {
+        await api(`/api/admin/spots/${editingSpot.id}`, { method: "PUT", body: JSON.stringify(payload) });
+        toast.success(`Updated "${formName}" successfully!`);
+      } else {
+        await api("/api/admin/spots", { method: "POST", body: JSON.stringify(payload) });
+        toast.success(`Created and published "${formName}"!`);
+      }
+      setIsModalOpen(false);
+      q.refetch();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
+  async function handleDeleteSpot(id: string, name: string) {
+    if (!confirm(`Are you sure you want to permanently delete "${name}" from Tupi Tour? This cannot be undone.`)) return;
+    try {
+      await api(`/api/admin/spots/${id}`, { method: "DELETE" });
+      toast.success(`Deleted "${name}"`);
+      q.refetch();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
 
   async function updateStatus(id: string, status: string) {
     try {
@@ -379,7 +493,7 @@ function SpotsTab() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-3">
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -389,10 +503,19 @@ function SpotsTab() {
             <option value="approved">Approved & Live</option>
             <option value="pending">Pending Approval</option>
             <option value="rejected">Rejected</option>
+            <option value="draft">Draft</option>
           </select>
           <span className="text-xs font-semibold text-forest/70">
             {spots.length} destination{spots.length === 1 ? "" : "s"}
           </span>
+
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="flex items-center gap-1.5 rounded-xl bg-forest px-4 py-2 text-xs font-bold text-cream shadow-sm hover:bg-forest-800 transition"
+          >
+            <Plus size={15} /> Add Destination
+          </button>
         </div>
       </div>
 
@@ -434,7 +557,7 @@ function SpotsTab() {
                   </span>
                 </div>
                 <p className="mt-0.5 text-xs text-forest/70">
-                  {spot.barangay} · {spot.category?.name || "General Attraction"} · {spot.viewCount} views · {spot.visitCount} visits
+                  {spot.barangay} · {spot.category?.name || "General Attraction"} · {spot.viewCount} views · {spot.visitCount} visits · Fee: {spot.estimatedEntranceFee != null ? `₱${spot.estimatedEntranceFee}` : "Free"}
                 </p>
               </div>
             </div>
@@ -452,6 +575,15 @@ function SpotsTab() {
 
               <button
                 type="button"
+                onClick={() => openEditModal(spot)}
+                className="rounded-xl border border-forest/15 p-2 text-forest/70 hover:bg-cream hover:text-forest"
+                title="Edit destination details"
+              >
+                <Pencil size={15} />
+              </button>
+
+              <button
+                type="button"
                 onClick={() => toggleFeature(spot.id, Boolean(spot.featured))}
                 className={`rounded-xl border p-2 text-xs font-semibold transition ${
                   spot.featured ? "border-gold bg-gold/15 text-forest" : "border-forest/15 text-forest/70 hover:bg-cream"
@@ -462,19 +594,19 @@ function SpotsTab() {
               </button>
 
               <button
-                    type="button"
-                    onClick={async () => {
-                      await api(`/api/admin/spots/${spot.id}/verify`, { method: "POST", body: JSON.stringify({ status: "verified" }) });
-                      toast.success("Verified destination freshness!");
-                      q.refetch();
-                    }}
-                    className="rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
-                    title="Verify destination freshness"
-                  >
-                    ✓ Verify Freshness
-                  </button>
+                type="button"
+                onClick={async () => {
+                  await api(`/api/admin/spots/${spot.id}/verify`, { method: "POST", body: JSON.stringify({ status: "verified" }) });
+                  toast.success("Verified destination freshness!");
+                  q.refetch();
+                }}
+                className="rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
+                title="Verify destination freshness"
+              >
+                ✓ Verify
+              </button>
 
-                  {spot.status !== "approved" && (
+              {spot.status !== "approved" && (
                 <button
                   type="button"
                   onClick={() => updateStatus(spot.id, "approved")}
@@ -493,6 +625,15 @@ function SpotsTab() {
                   <X size={14} /> Reject
                 </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => handleDeleteSpot(spot.id, spot.name)}
+                className="rounded-xl border border-rose-200 bg-rose-50/50 p-2 text-rose-600 hover:bg-rose-100"
+                title="Delete destination"
+              >
+                <Trash2 size={15} />
+              </button>
             </div>
           </div>
         ))}
@@ -503,6 +644,223 @@ function SpotsTab() {
           </div>
         )}
       </div>
+
+      {/* Create / Edit Destination Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm overflow-y-auto">
+          <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-2xl my-8">
+            <div className="flex items-center justify-between border-b border-forest/10 pb-4">
+              <div>
+                <h3 className="font-serif text-2xl font-bold text-forest">
+                  {editingSpot ? `Edit "${editingSpot.name}"` : "Add New Tourist Destination"}
+                </h3>
+                <p className="text-xs text-forest/60">
+                  {editingSpot ? "Update coordinates, pricing, operating hours, and details." : "Register an official accredited tourist spot in Tupi, South Cotabato."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsModalOpen(false)}
+                className="rounded-full p-2 text-forest/50 hover:bg-cream"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveSpot} className="mt-5 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Destination Name *</label>
+                  <input
+                    required
+                    value={formName}
+                    onChange={(e) => setFormName(e.target.value)}
+                    placeholder="e.g. SG Farm (Strawberry Guyabano)"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Category *</label>
+                  <select
+                    required
+                    value={formCategory}
+                    onChange={(e) => setFormCategory(e.target.value)}
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  >
+                    {cats.data?.categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Barangay *</label>
+                  <input
+                    required
+                    value={formBarangay}
+                    onChange={(e) => setFormBarangay(e.target.value)}
+                    placeholder="e.g. Kablon, Linan, Poblacion"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Full Address / Sitio *</label>
+                  <input
+                    required
+                    value={formAddress}
+                    onChange={(e) => setFormAddress(e.target.value)}
+                    placeholder="e.g. Sitio Glandang, Brgy. Kablon, Tupi"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Latitude (GPS) *</label>
+                  <input
+                    required
+                    type="number"
+                    step="any"
+                    value={formLat}
+                    onChange={(e) => setFormLat(parseFloat(e.target.value))}
+                    placeholder="6.3785"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Longitude (GPS) *</label>
+                  <input
+                    required
+                    type="number"
+                    step="any"
+                    value={formLng}
+                    onChange={(e) => setFormLng(parseFloat(e.target.value))}
+                    placeholder="124.9952"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-forest uppercase mb-1">Short Description (1-2 lines) *</label>
+                <input
+                  required
+                  value={formShortDesc}
+                  onChange={(e) => setFormShortDesc(e.target.value)}
+                  placeholder="Scenic highland farm with strawberry picking and mountain views."
+                  className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-forest uppercase mb-1">Full Description & Visitor Reminders *</label>
+                <textarea
+                  required
+                  rows={3}
+                  value={formDesc}
+                  onChange={(e) => setFormDesc(e.target.value)}
+                  placeholder="Detailed background, scenic features, attractions, and visitor reminders..."
+                  className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                />
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Entrance Fee (₱)</label>
+                  <input
+                    type="number"
+                    value={formFee}
+                    onChange={(e) => setFormFee(e.target.value)}
+                    placeholder="0 for Free entry"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Operating Hours</label>
+                  <input
+                    value={formOperatingHours}
+                    onChange={(e) => setFormOperatingHours(e.target.value)}
+                    placeholder="Daily, 8:00 AM - 5:00 PM"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Publish Status</label>
+                  <select
+                    value={formStatus}
+                    onChange={(e) => setFormStatus(e.target.value)}
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  >
+                    <option value="approved">Approved & Live</option>
+                    <option value="pending">Pending Review</option>
+                    <option value="under_review">Under Review</option>
+                    <option value="draft">Draft (Hidden)</option>
+                    <option value="rejected">Rejected</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Amenities (Comma separated)</label>
+                  <input
+                    value={formAmenities}
+                    onChange={(e) => setFormAmenities(e.target.value)}
+                    placeholder="Parking, Restrooms, Viewpoint, Stalls"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-forest uppercase mb-1">Contact Details</label>
+                  <input
+                    value={formContact}
+                    onChange={(e) => setFormContact(e.target.value)}
+                    placeholder="Phone number, email, or page link"
+                    className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-forest uppercase mb-1">Main Image URL</label>
+                <input
+                  value={formImageUrl}
+                  onChange={(e) => setFormImageUrl(e.target.value)}
+                  placeholder="https://images.unsplash.com/photo-..."
+                  className="w-full rounded-xl border border-forest/20 p-2.5 text-xs text-forest focus:border-forest focus:outline-none"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-forest/10">
+                <button
+                  type="button"
+                  onClick={() => setIsModalOpen(false)}
+                  className="rounded-xl border border-forest/20 px-5 py-2.5 text-xs font-semibold text-forest hover:bg-cream"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-xl bg-forest px-6 py-2.5 text-xs font-bold text-cream hover:bg-forest-800 shadow-md"
+                >
+                  {editingSpot ? "Save Changes" : "Create & Publish"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

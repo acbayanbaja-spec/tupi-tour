@@ -158,6 +158,19 @@ export async function buildItinerary(input: PlannerInput) {
   const total = transportCost + food + fees + other;
   const over = total > input.budget;
   const withinBudget = !over;
+  const deficit = Math.max(0, total - input.budget);
+  const remainingBudget = Math.max(0, input.budget - total);
+
+  const budgetSuggestions: string[] = [];
+  if (over) {
+    if (input.transport !== "jeepney") {
+      budgetSuggestions.push(`Switching from ${input.transport} to public jeepney or shared tricycle can save approx. ₱${Math.round(transportCost * 0.45)}.`);
+    }
+    if (fees > 0) {
+      budgetSuggestions.push(`Substitute one paid farm entrance with a free public destination like the Pine Ridge viewpoint or town plaza.`);
+    }
+    budgetSuggestions.push(`Pack your own water and snacks to reduce incidental meal and beverage expenses.`);
+  }
 
   const rankedNames = ranked.map((s) => s.name);
   const aiNotes = await generateAiItineraryNotes(rankedNames, input);
@@ -188,10 +201,13 @@ export async function buildItinerary(input: PlannerInput) {
       entranceFees: fees,
       other,
       total,
+      remainingBudget,
+      deficit,
       withinBudget,
+      suggestions: budgetSuggestions,
       note: over
-        ? `The estimated total of ₱${total.toLocaleString()} is above your stated budget of ₱${input.budget.toLocaleString()}. Consider sharing transport or reducing one highland stop.`
-        : `This rough total of ₱${total.toLocaleString()} is within your stated budget of ₱${input.budget.toLocaleString()}. Keep extra cash for local fruit purchases.`,
+        ? `The estimated total of ₱${total.toLocaleString()} is ₱${deficit.toLocaleString()} above your stated budget of ₱${input.budget.toLocaleString()}. Review the suggestions below to bring it within budget.`
+        : `This rough total of ₱${total.toLocaleString()} is within your stated budget of ₱${input.budget.toLocaleString()} (₱${remainingBudget.toLocaleString()} remaining). Keep extra cash for local fruit purchases.`,
     },
     aiNotes,
   };

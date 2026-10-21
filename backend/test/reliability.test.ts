@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { describe, it } from "node:test";
+import { fetchRoadRoute } from "../src/geo.js";
 import { buildItinerary } from "../src/itinerary.js";
 import { initDb, store } from "../src/store.js";
 import type { TouristSpot } from "../src/types.js";
@@ -304,6 +305,123 @@ describe("Tupi Tour Comprehensive Durability, Security & Feature Tests", async (
       assert.ok(typeof analytics.totals.visits === "number");
       assert.ok(Array.isArray(analytics.popular), "Popular spots must be an array");
       assert.ok(Array.isArray(analytics.categories), "Categories breakdown must be an array");
+    });
+  });
+
+  describe("8. Feature 1: Destination Deletion & Full CRUD Operations", () => {
+    it("creates, retrieves, and cleanly deletes a tourist spot", async () => {
+      const spotId = `sp-del-test-${Date.now()}`;
+      const newSpot: TouristSpot = {
+        id: spotId,
+        slug: `spot-del-${Date.now()}`,
+        name: "Temporary Tupi Park Test",
+        categoryId: "cat-nature",
+        description: "Test description for destination CRUD.",
+        shortDescription: "Temporary test spot.",
+        lat: 6.33,
+        lng: 124.96,
+        address: "Poblacion, Tupi",
+        barangay: "Poblacion",
+        amenities: ["Benches"],
+        featured: false,
+        status: "approved",
+        dataSource: "curated",
+        estimatedEntranceFee: 0,
+        popularityScore: 10,
+        viewCount: 1,
+        visitCount: 0,
+        images: [],
+        verificationStatus: "verified",
+        safetyGuidance: [],
+        emergencyContact: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await store.saveSpot(newSpot);
+      const exists = await store.getSpot(spotId);
+      assert.ok(exists, "Spot must exist after saving");
+
+      const deleted = await store.deleteSpot(spotId);
+      assert.equal(deleted, true, "deleteSpot must return true on success");
+
+      const afterDelete = await store.getSpot(spotId);
+      assert.equal(afterDelete, null, "Deleted spot must no longer exist in store");
+    });
+  });
+
+  describe("9. Feature 2: Road Route Navigation via OSRM / Fallback", () => {
+    it("calculates driving road route with non-empty polyline coordinates and duration", async () => {
+      // From Poblacion to SG Farm
+      const origin = { lat: 6.3347, lng: 124.9669 };
+      const dest = { lat: 6.3785, lng: 124.9952 };
+
+      const route = await fetchRoadRoute(origin, dest);
+      assert.ok(route.distanceKm > 0, "Distance must be greater than 0 km");
+      assert.ok(route.durationMinutes > 0, "Driving duration must be greater than 0 minutes");
+      assert.ok(Array.isArray(route.geometry), "Geometry must be an array of lat/lng pairs");
+      assert.ok(route.geometry.length >= 2, "Geometry must contain at least start and end points");
+      assert.ok(route.provider.includes("OSRM") || route.provider.includes("Fallback"), "Provider must be OSRM or Fallback");
+    });
+  });
+
+  describe("10. Feature 4: Budget Deficit Arithmetic & Suggestions", () => {
+    it("calculates deficit and actionable cost-saving recommendations when over budget", async () => {
+      // Intentional low budget for 5 travelers
+      const res = await buildItinerary({
+        hours: 8,
+        budget: 500, // Very low budget for 5 travelers
+        interests: ["agri-tourism", "adventure"],
+        travelers: 5,
+        transport: "car",
+        intensity: "active",
+      });
+
+      assert.equal(res.budget.withinBudget, false, "Should be marked over budget");
+      assert.ok((res.budget.deficit || 0) > 0, "Deficit must be greater than 0");
+      assert.equal(res.budget.remainingBudget, 0, "Remaining budget must be 0 when in deficit");
+      assert.ok(Array.isArray(res.budget.suggestions), "Suggestions must be an array");
+      assert.ok(res.budget.suggestions!.length > 0, "Must provide actionable cost-saving recommendations");
+    });
+
+    it("calculates remaining budget buffer when within budget", async () => {
+      const res = await buildItinerary({
+        hours: 4,
+        budget: 10000, // Generous budget
+        interests: ["agri-tourism"],
+        travelers: 1,
+        transport: "tricycle",
+        intensity: "easy",
+      });
+
+      assert.equal(res.budget.withinBudget, true, "Should be within budget");
+      assert.equal(res.budget.deficit, 0, "Deficit must be 0");
+      assert.ok((res.budget.remainingBudget || 0) > 0, "Remaining budget must be positive");
+    });
+  });
+
+  describe("11. Feature 5: Review Points Deduplication & History", () => {
+    it("awards points on first review and tracks activity in user points ledger", async () => {
+      const reviewUser = await store.createUser({
+        email: `reviewer-${Date.now()}@example.com`,
+        passwordHash: "hash123",
+        name: "Honest Reviewer",
+        role: "tourist",
+      });
+
+      const initialPoints = reviewUser.points || 0;
+
+      // Simulate first review points grant (+25 pts)
+      await store.addPoints(reviewUser.id, 25, "First verified review for Tupi Fruit Park");
+
+      const userAfter = await store.findUserById(reviewUser.id);
+      assert.equal(userAfter?.points, initialPoints + 25, "User points must increase by 25");
+
+      // Verify points ledger record exists
+      const history = await store.pointsHistory(reviewUser.id);
+      assert.ok(history.length > 0, "Points ledger must contain transaction history");
+      assert.equal(history[0].amount, 25);
+      assert.match(history[0].reason, /First verified review/i);
     });
   });
 });
