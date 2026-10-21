@@ -19,13 +19,13 @@ export function signRefresh(user: User) {
   return jwt.sign({ sub: user.id, typ: "refresh" }, config.jwtRefreshSecret, { expiresIn: "14d" });
 }
 
-export function optionalAuth(req: AuthedRequest, _res: Response, next: NextFunction) {
+export async function optionalAuth(req: AuthedRequest, _res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   const token = header?.startsWith("Bearer ") ? header.slice(7) : req.cookies?.access_token;
   if (!token) return next();
   try {
     const payload = jwt.verify(token, config.jwtSecret) as { sub: string };
-    const user = store.findUserById(payload.sub);
+    const user = await store.findUserById(payload.sub);
     if (user) req.user = store.publicUser(user);
   } catch {
     /* unauthenticated */
@@ -33,8 +33,8 @@ export function optionalAuth(req: AuthedRequest, _res: Response, next: NextFunct
   next();
 }
 
-export function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
-  optionalAuth(req, res, () => {
+export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  await optionalAuth(req, res, () => {
     if (!req.user) return res.status(401).json({ error: "Please sign in to continue." });
     next();
   });

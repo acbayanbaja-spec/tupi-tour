@@ -74,4 +74,56 @@ export type Spot = {
   etaMinutes?: number | null;
   viewCount: number;
   visitCount: number;
+  lastVerifiedAt?: string;
+  verificationStatus?: "verified" | "unverified" | "outdated" | "under_review";
+  verifiedBy?: string;
+  safetyGuidance?: string[];
+  emergencyContact?: string;
+};
+
+export type Voucher = {
+  id: string;
+  code: string;
+  userId: string;
+  rewardId: string;
+  rewardName?: string;
+  rewardDescription?: string;
+  status: "active" | "redeemed" | "expired" | "cancelled";
+  expiresAt: string;
+  redeemedAt?: string;
+  redeemedBy?: string;
+  createdAt: string;
+};
+
+export type WeatherForecast = {
+  current: {
+    tempC: number;
+    feelsLikeC: number;
+    humidity: number;
+    condition: string;
+    weatherCode: number;
+    windKmh: number;
+    isRainy: boolean;
+  };
+  daily: {
+    date: string;
+    tempMaxC: number;
+    tempMinC: number;
+    rainProb: number;
+    condition: string;
+  }[];
+  advisory: string;
+  lastUpdated: string;
+  source: string;
+};
+
+export type SavedRoute = {
+  id: string;
+  userId: string;
+  name: string;
+  stops: { spotId: string; name: string; lat: number; lng: number; order: number }[];
+  totalDistanceKm: number;
+  estimatedMinutes: number;
+  createdAt: string;
+  updatedAt: string;
 };

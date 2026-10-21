@@ -1,506 +1,290 @@
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import path from "path";
-import bcrypt from "bcryptjs";
-import { Pool } from "pg";
 import { config } from "./config.js";
-import { badgeSeed, categorySeed, newId, rewardSeed, spotSeed } from "./seedData.js";
+import { fallbackStore } from "./db/fallbackStore.js";
+import { runMigrations } from "./db/migrate.js";
+import { checkDbReadiness, getPool } from "./db/pool.js";
+import { pgRepo } from "./db/repo.js";
 import type {
-  DatabaseShape,
+  Category,
   Notification,
   Review,
   Reward,
   Role,
+  SavedRoute,
+  SpotStatus,
   TouristSpot,
   Trip,
   User,
+  VerificationStatus,
+  Voucher,
 } from "./types.js";
 
-const dataDir = path.join(process.cwd(), "data");
-const dbFile = path.join(dataDir, "db.json");
+let usingPg = false;
 
-function emptyDb(): DatabaseShape {
-  return {
-    users: [],
-    categories: [],
-    spots: [],
-    favorites: [],
-    reviews: [],
-    trips: [],
-    rewards: [],
-    userRewards: [],
-    points: [],
-    badges: [],
-    userBadges: [],
-    notifications: [],
-    visits: [],
-    reports: [],
-    ownerVerifications: [],
-    auditLogs: [],
-    refreshTokens: [],
-    passwordResets: [],
-    searchEvents: [],
-  };
-}
-
-let memory = emptyDb();
-let pg: Pool | null = null;
-
-async function syncToPg() {
-  if (!pg) return;
-  try {
-    await pg.query(
-      `INSERT INTO app_state (key, data, updated_at) VALUES ('main', $1, NOW())
-       ON CONFLICT (key) DO UPDATE SET data = $1, updated_at = NOW()`,
-      [JSON.stringify(memory)]
-    );
-  } catch (err) {
-    console.error("Failed to sync to PostgreSQL app_state:", err);
-  }
-}
-
-function persist() {
-  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
-  writeFileSync(dbFile, JSON.stringify(memory, null, 2), "utf8");
-  if (pg) {
-    syncToPg().catch(() => {});
-  }
-}
-
-function loadJson() {
-  if (existsSync(dbFile)) {
-    memory = { ...emptyDb(), ...JSON.parse(readFileSync(dbFile, "utf8")) };
-  }
-}
-
-async function seedIfEmpty() {
-  if (memory.users.length) return;
-  const password = async (p: string) => bcrypt.hash(p, 12);
-  const ts = new Date().toISOString();
-  memory.categories = categorySeed();
-  memory.spots = spotSeed();
-  memory.rewards = rewardSeed();
-  memory.badges = badgeSeed;
-  memory.users = [
-    {
-      id: "user-admin",
-      email: "admin@tupi.tour",
-      passwordHash: await password("AdminTupi2026!"),
-      name: "Tupi Tourism Admin",
-      role: "admin",
-      interests: [],
-      onboardingComplete: true,
-      emailVerified: true,
-      points: 0,
-      createdAt: ts,
-      updatedAt: ts,
-    },
-    {
-      id: "user-owner",
-      email: "owner@tupi.tour",
-      passwordHash: await password("Owner123!"),
-      name: "Kablon Farm Owner",
-      role: "owner",
-      interests: ["agri-tourism"],
-      onboardingComplete: true,
-      emailVerified: true,
-      points: 40,
-      createdAt: ts,
-      updatedAt: ts,
-    },
-    {
-      id: "user-tourist",
-      email: "tourist@tupi.tour",
-      passwordHash: await password("Tourist123!"),
-      name: "Ana Explorer",
-      role: "tourist",
-      interests: ["nature", "agri-tourism"],
-      budgetPreference: "moderate",
-      tripStyle: "half-day",
-      onboardingComplete: true,
-      emailVerified: true,
-      points: 160,
-      createdAt: ts,
-      updatedAt: ts,
-    },
-  ];
-  memory.spots[0].ownerId = "user-owner";
-  memory.ownerVerifications.push({
-    id: newId(),
-    userId: "user-owner",
-    businessName: "Glandang Highland Farm",
-    notes: "Demo owner account for SG Farm area.",
-    status: "approved",
-    createdAt: ts,
-    reviewedAt: ts,
-  });
-  persist();
-}
-
-export async function initDb() {
-  if (config.databaseUrl) {
-    pg = new Pool({
-      connectionString: config.databaseUrl,
-      ssl: config.databaseUrl.includes("localhost") ? false : { rejectUnauthorized: false },
-      connectionTimeoutMillis: 10000,
-    });
+export async function initDb(): Promise<void> {
+  const readiness = await checkDbReadiness();
+  if (readiness.ready && config.databaseUrl) {
     try {
-      await pg.query("select 1");
-      console.log("Connected to PostgreSQL database successfully.");
-      await pg.query(`
-        CREATE TABLE IF NOT EXISTS app_state (
-          key text PRIMARY KEY,
-          data jsonb NOT NULL,
-          updated_at timestamptz DEFAULT NOW()
-        );
-      `);
-      const res = await pg.query("SELECT data FROM app_state WHERE key = 'main'");
-      if (res.rows.length && res.rows[0].data) {
-        memory = { ...emptyDb(), ...res.rows[0].data };
-        console.log("Restored application state from PostgreSQL.");
-      } else {
-        loadJson();
-        await seedIfEmpty();
-        await syncToPg();
-        console.log("Initialized PostgreSQL app_state with seed data.");
-      }
+      await runMigrations();
+      usingPg = true;
+      console.log("Connected to Supabase PostgreSQL database as authoritative production store.");
+      return;
     } catch (err) {
-      console.error("Postgres connection failed, falling back to local JSON store:", err);
-      pg = null;
-      loadJson();
-      await seedIfEmpty();
+      console.error("PostgreSQL migration failed:", err);
+      if (config.isProduction) {
+        throw new Error(`Production startup aborted: PostgreSQL database migration failed: ${(err as Error).message}`);
+      }
     }
-  } else {
-    loadJson();
-    await seedIfEmpty();
   }
+
+  if (config.isProduction) {
+    throw new Error(
+      "FATAL: Production mode requires a working Supabase PostgreSQL connection. Set DATABASE_URL and verify connectivity."
+    );
+  }
+
+  console.warn("⚠️ Warning: Running in DEVELOPMENT mode using isolated fallback store. PostgreSQL is not connected.");
+  await fallbackStore.init();
+  usingPg = false;
+}
+
+function target() {
+  return usingPg ? pgRepo : fallbackStore;
 }
 
 export const store = {
   isUsingPostgres() {
-    return pg !== null;
+    return usingPg;
   },
-  audit(actorId: string | undefined, action: string, meta: Record<string, unknown> = {}) {
-    memory.auditLogs.unshift({ id: newId(), actorId, action, meta, createdAt: new Date().toISOString() });
-    persist();
-  },
+
   publicUser(u: User) {
     const { passwordHash, ...rest } = u;
     return rest;
   },
-  findUserByEmail(email: string) {
-    return memory.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+
+  async audit(actorId: string | undefined, action: string, meta: Record<string, unknown> = {}) {
+    return target().audit(actorId, action, meta);
   },
-  findUserById(id: string) {
-    return memory.users.find((u) => u.id === id);
+
+  async logSearch(query: string, userId?: string) {
+    return target().logSearch(query, userId);
   },
-  createUser(input: { email: string; passwordHash: string; name: string; role: Role }) {
-    const ts = new Date().toISOString();
-    const user: User = {
-      id: newId(),
-      email: input.email.toLowerCase(),
-      passwordHash: input.passwordHash,
-      name: input.name,
-      role: input.role,
-      interests: [],
-      onboardingComplete: false,
-      emailVerified: true,
-      points: 0,
-      createdAt: ts,
-      updatedAt: ts,
-    };
-    memory.users.push(user);
-    persist();
-    return user;
+
+  async findUserByEmail(email: string): Promise<User | null> {
+    return target().findUserByEmail(email);
   },
-  updateUser(id: string, patch: Partial<User>) {
-    const user = this.findUserById(id);
-    if (!user) return null;
-    Object.assign(user, patch, { updatedAt: new Date().toISOString() });
-    persist();
-    return user;
+
+  async findUserById(id: string): Promise<User | null> {
+    return target().findUserById(id);
   },
-  listUsers(role?: Role) {
-    return memory.users.filter((u) => (role ? u.role === role : true));
+
+  async createUser(input: { email: string; passwordHash: string; name: string; role: Role }): Promise<User> {
+    return target().createUser(input);
   },
-  categories() {
-    return memory.categories;
+
+  async updateUser(id: string, patch: Partial<User>): Promise<User | null> {
+    return target().updateUser(id, patch);
   },
-  upsertCategory(cat: { id?: string; slug: string; name: string; description: string; icon: string }) {
-    if (cat.id) {
-      const existing = memory.categories.find((c) => c.id === cat.id);
-      if (existing) {
-        Object.assign(existing, cat);
-        persist();
-        return existing;
-      }
-    }
-    const created = { id: cat.id || newId(), slug: cat.slug, name: cat.name, description: cat.description, icon: cat.icon };
-    memory.categories.push(created);
-    persist();
-    return created;
+
+  async listUsers(role?: Role): Promise<User[]> {
+    return target().listUsers(role);
   },
-  spots(status: TouristSpot["status"] | "all" = "approved") {
-    return memory.spots.filter((s) => (status === "all" ? true : s.status === status));
+
+  async categories(): Promise<Category[]> {
+    return target().categories();
   },
-  getSpot(idOrSlug: string) {
-    return memory.spots.find((s) => s.id === idOrSlug || s.slug === idOrSlug);
+
+  async upsertCategory(cat: { id?: string; slug: string; name: string; description: string; icon: string }): Promise<Category> {
+    return target().upsertCategory(cat);
   },
-  saveSpot(spot: TouristSpot) {
-    const idx = memory.spots.findIndex((s) => s.id === spot.id);
-    if (idx >= 0) memory.spots[idx] = spot;
-    else memory.spots.push(spot);
-    persist();
-    return spot;
+
+  async spots(status: SpotStatus | "all" = "approved"): Promise<TouristSpot[]> {
+    return target().spots(status);
   },
-  bumpViews(id: string) {
-    const spot = this.getSpot(id);
-    if (!spot) return;
-    spot.viewCount += 1;
-    persist();
+
+  async getSpot(idOrSlug: string): Promise<TouristSpot | null> {
+    return target().getSpot(idOrSlug);
   },
-  logSearch(query: string, userId?: string) {
-    memory.searchEvents.unshift({ id: newId(), query, userId, createdAt: new Date().toISOString() });
-    memory.searchEvents = memory.searchEvents.slice(0, 2000);
-    persist();
+
+  async saveSpot(spot: TouristSpot): Promise<TouristSpot> {
+    return target().saveSpot(spot);
   },
-  toggleFavorite(userId: string, spotId: string) {
-    const existing = memory.favorites.find((f) => f.userId === userId && f.spotId === spotId);
-    if (existing) {
-      memory.favorites = memory.favorites.filter((f) => f !== existing);
-      persist();
-      return { saved: false };
-    }
-    memory.favorites.push({ userId, spotId, createdAt: new Date().toISOString() });
-    persist();
-    return { saved: true };
+
+  async bumpViews(id: string): Promise<void> {
+    return target().bumpViews(id);
   },
-  favoritesFor(userId: string) {
-    return memory.favorites.filter((f) => f.userId === userId);
+
+  async updateSpotVerification(id: string, status: VerificationStatus, verifiedBy: string): Promise<TouristSpot | null> {
+    return target().updateSpotVerification(id, status, verifiedBy);
   },
-  isFavorite(userId: string, spotId: string) {
-    return memory.favorites.some((f) => f.userId === userId && f.spotId === spotId);
+
+  async toggleFavorite(userId: string, spotId: string): Promise<{ saved: boolean }> {
+    return target().toggleFavorite(userId, spotId);
   },
-  reviewsForSpot(spotId: string) {
-    return memory.reviews.filter((r) => r.spotId === spotId && r.status === "published");
+
+  async favoritesFor(userId: string) {
+    return target().favoritesFor(userId);
   },
-  allReviews() {
-    return memory.reviews;
+
+  async isFavorite(userId: string, spotId: string): Promise<boolean> {
+    return target().isFavorite(userId, spotId);
   },
-  getReview(id: string) {
-    return memory.reviews.find((r) => r.id === id);
+
+  async reviewsForSpot(spotId: string): Promise<Review[]> {
+    return target().reviewsForSpot(spotId);
   },
-  addReview(review: Review) {
-    memory.reviews = memory.reviews.filter((r) => !(r.userId === review.userId && r.spotId === review.spotId));
-    memory.reviews.unshift(review);
-    persist();
-    return review;
+
+  async allReviews(): Promise<Review[]> {
+    return target().allReviews();
   },
-  hideReview(id: string) {
-    const r = this.getReview(id);
-    if (r) {
-      r.status = "hidden";
-      persist();
-    }
-    return r;
+
+  async getReview(id: string): Promise<Review | null> {
+    return target().getReview(id);
   },
-  tripsFor(userId: string) {
-    return memory.trips.filter((t) => t.userId === userId);
+
+  async addReview(review: Review): Promise<Review> {
+    return target().addReview(review);
   },
-  getTrip(id: string) {
-    return memory.trips.find((t) => t.id === id);
+
+  async hideReview(id: string): Promise<Review | null> {
+    return target().hideReview(id);
   },
-  saveTrip(trip: Trip) {
-    const idx = memory.trips.findIndex((t) => t.id === trip.id);
-    if (idx >= 0) memory.trips[idx] = trip;
-    else memory.trips.push(trip);
-    persist();
-    return trip;
+
+  async tripsFor(userId: string): Promise<Trip[]> {
+    return target().tripsFor(userId);
   },
-  deleteTrip(id: string, userId: string) {
-    const trip = this.getTrip(id);
-    if (!trip || trip.userId !== userId) return false;
-    memory.trips = memory.trips.filter((t) => t.id !== id);
-    persist();
-    return true;
+
+  async getTrip(id: string): Promise<Trip | null> {
+    return target().getTrip(id);
   },
-  rewards() {
-    return memory.rewards;
+
+  async saveTrip(trip: Trip): Promise<Trip> {
+    return target().saveTrip(trip);
   },
-  saveReward(reward: Reward) {
-    const idx = memory.rewards.findIndex((r) => r.id === reward.id);
-    if (idx >= 0) memory.rewards[idx] = reward;
-    else memory.rewards.push(reward);
-    persist();
-    return reward;
+
+  async deleteTrip(id: string, userId: string): Promise<boolean> {
+    return target().deleteTrip(id, userId);
   },
-  addPoints(userId: string, amount: number, reason: string) {
-    const user = this.findUserById(userId);
-    if (!user) return null;
-    user.points = Math.max(0, user.points + amount);
-    memory.points.unshift({ id: newId(), userId, amount, reason, createdAt: new Date().toISOString() });
-    this.maybeBadges(user);
-    persist();
-    return user;
+
+  // Saved Routes (Feature 2)
+  async savedRoutesFor(userId: string): Promise<SavedRoute[]> {
+    return target().savedRoutesFor(userId);
   },
-  redeem(userId: string, rewardId: string) {
-    const user = this.findUserById(userId);
-    const reward = memory.rewards.find((r) => r.id === rewardId && r.active);
-    if (!user || !reward) return { error: "Reward not found" };
-    if (reward.stock <= 0) return { error: "Out of stock" };
-    if (user.points < reward.pointsCost) return { error: "Not enough points" };
-    user.points -= reward.pointsCost;
-    reward.stock -= 1;
-    memory.points.unshift({ id: newId(), userId, amount: -reward.pointsCost, reason: `Redeemed ${reward.name}`, createdAt: new Date().toISOString() });
-    const redemption = { id: newId(), userId, rewardId, createdAt: new Date().toISOString() };
-    memory.userRewards.unshift(redemption);
-    this.notify(userId, "Reward redeemed", `You redeemed ${reward.name}.`, "reward");
-    persist();
-    return { redemption, user: this.publicUser(user), reward };
+
+  async saveRoute(route: SavedRoute): Promise<SavedRoute> {
+    return target().saveRoute(route);
   },
-  redemptions(userId?: string) {
-    return memory.userRewards.filter((r) => (userId ? r.userId === userId : true));
+
+  async deleteRoute(id: string, userId: string): Promise<boolean> {
+    return target().deleteRoute(id, userId);
   },
-  pointsHistory(userId: string) {
-    return memory.points.filter((p) => p.userId === userId);
+
+  async rewards(includeInactive = false): Promise<Reward[]> {
+    return target().rewards(includeInactive);
   },
-  notify(userId: string, title: string, body: string, type: string) {
-    const n: Notification = { id: newId(), userId, title, body, type, read: false, createdAt: new Date().toISOString() };
-    memory.notifications.unshift(n);
-    persist();
-    return n;
+
+  async saveReward(reward: Reward): Promise<Reward> {
+    return target().saveReward(reward);
   },
-  notifications(userId: string) {
-    return memory.notifications.filter((n) => n.userId === userId);
+
+  async addPoints(userId: string, amount: number, reason: string): Promise<User | null> {
+    return target().addPoints(userId, amount, reason);
   },
-  markRead(userId: string, id?: string) {
-    memory.notifications.forEach((n) => {
-      if (n.userId === userId && (!id || n.id === id)) n.read = true;
-    });
-    persist();
+
+  async redeem(userId: string, rewardId: string, idempotencyKey?: string): Promise<{ redemption: any; voucher: Voucher; user: any; reward: Reward } | { error: string }> {
+    return target().redeem(userId, rewardId, idempotencyKey);
   },
-  visitsFor(userId: string) {
-    return memory.visits.filter((v) => v.userId === userId);
+
+  async vouchersFor(userId: string): Promise<Voucher[]> {
+    return target().vouchersFor(userId);
   },
-  checkIn(userId: string, spotId: string) {
-    const existingToday = memory.visits.find((v) => v.userId === userId && v.spotId === spotId && v.createdAt.slice(0, 10) === new Date().toISOString().slice(0, 10));
-    if (existingToday) return { visit: existingToday, awarded: false };
-    const visit = { id: newId(), userId, spotId, createdAt: new Date().toISOString() };
-    memory.visits.unshift(visit);
-    const spot = this.getSpot(spotId);
-    if (spot) spot.visitCount += 1;
-    this.addPoints(userId, 25, `Visited ${spot?.name || "a destination"}`);
-    this.notify(userId, "Visit recorded", `Nice work exploring ${spot?.name || "Tupi"}. +25 points`, "visit");
-    persist();
-    return { visit, awarded: true };
+
+  async getVoucherByCode(code: string): Promise<Voucher | null> {
+    return target().getVoucherByCode(code);
   },
-  maybeBadges(user: User) {
-    const award = (slug: string) => {
-      const badge = memory.badges.find((b) => b.slug === slug);
-      if (!badge) return;
-      if (memory.userBadges.some((b) => b.userId === user.id && b.badgeId === badge.id)) return;
-      memory.userBadges.push({ userId: user.id, badgeId: badge.id, earnedAt: new Date().toISOString() });
-      this.notify(user.id, "Badge unlocked", badge.name, "badge");
-    };
-    const visits = this.visitsFor(user.id).length;
-    if (visits >= 1) award("first-adventure");
-    if (visits >= 3) award("tupi-explorer");
-    if (this.favoritesFor(user.id).some((f) => this.getSpot(f.spotId)?.categoryId === "cat-nature")) award("nature-seeker");
-    if (memory.reviews.some((r) => r.userId === user.id)) award("local-discoverer");
-    if (user.points >= 300) award("tupi-champion");
+
+  async verifyAndRedeemVoucher(code: string, verifiedByUserId: string): Promise<{ success: boolean; voucher?: Voucher; error?: string }> {
+    return target().verifyAndRedeemVoucher(code, verifiedByUserId);
   },
-  badgesFor(userId: string) {
-    return memory.userBadges
-      .filter((b) => b.userId === userId)
-      .map((b) => ({ ...b, badge: memory.badges.find((x) => x.id === b.badgeId) }));
+
+  async pointsHistory(userId: string) {
+    return target().pointsHistory(userId);
   },
-  addReport(report: DatabaseShape["reports"][number]) {
-    memory.reports.unshift(report);
-    persist();
-    return report;
+
+  async redemptions(userId?: string) {
+    return target().redemptions(userId);
   },
-  reports() {
-    return memory.reports;
+
+  async badges() {
+    return target().badges();
   },
-  ownerApps() {
-    return memory.ownerVerifications;
+
+  async badgesFor(userId: string) {
+    return target().badgesFor(userId);
   },
-  addOwnerApp(app: DatabaseShape["ownerVerifications"][number]) {
-    memory.ownerVerifications.unshift(app);
-    persist();
-    return app;
+
+  async visitsFor(userId: string) {
+    return target().visitsFor(userId);
   },
-  setOwnerApp(id: string, status: string) {
-    const app = memory.ownerVerifications.find((a) => a.id === id);
-    if (!app) return null;
-    app.status = status;
-    app.reviewedAt = new Date().toISOString();
-    const user = this.findUserById(app.userId);
-    if (user && status === "approved") user.role = "owner";
-    this.notify(app.userId, "Owner application update", `Status: ${status}`, "owner");
-    persist();
-    return app;
+
+  async checkIn(userId: string, spotId: string): Promise<{ visit: any; awarded: boolean; error?: string }> {
+    return target().checkIn(userId, spotId);
   },
-  saveRefresh(userId: string, tokenHash: string, expiresAt: string) {
-    memory.refreshTokens.push({ id: newId(), userId, tokenHash, expiresAt, revoked: false });
-    persist();
+
+  async notifications(userId: string): Promise<Notification[]> {
+    return target().notifications(userId);
   },
-  findRefresh(tokenHash: string) {
-    return memory.refreshTokens.find((t) => t.tokenHash === tokenHash && !t.revoked);
+
+  async notify(userId: string, title: string, body: string, type: string): Promise<Notification> {
+    return target().notify(userId, title, body, type);
   },
-  revokeRefresh(tokenHash: string) {
-    const t = this.findRefresh(tokenHash);
-    if (t) t.revoked = true;
-    persist();
+
+  async markRead(userId: string, id?: string): Promise<void> {
+    return target().markRead(userId, id);
   },
-  saveReset(userId: string, tokenHash: string, expiresAt: string) {
-    memory.passwordResets.push({ id: newId(), userId, tokenHash, expiresAt, used: false });
-    persist();
+
+  async ownerApps() {
+    return target().ownerApps();
   },
-  consumeReset(tokenHash: string) {
-    const row = memory.passwordResets.find((r) => r.tokenHash === tokenHash && !r.used && new Date(r.expiresAt) > new Date());
-    if (!row) return null;
-    row.used = true;
-    persist();
-    return row;
+
+  async addOwnerApp(app: any) {
+    return target().addOwnerApp(app);
   },
-  analytics() {
-    const approved = memory.spots.filter((s) => s.status === "approved");
-    const byCat = memory.categories.map((c) => ({
-      name: c.name,
-      spots: approved.filter((s) => s.categoryId === c.id).length,
-      views: approved.filter((s) => s.categoryId === c.id).reduce((a, s) => a + s.viewCount, 0),
-    }));
-    const searchCounts = new Map<string, number>();
-    memory.searchEvents.forEach((e) => searchCounts.set(e.query, (searchCounts.get(e.query) || 0) + 1));
-    return {
-      totals: {
-        spots: approved.length,
-        pendingSpots: memory.spots.filter((s) => s.status === "pending" || s.status === "under_review").length,
-        tourists: memory.users.filter((u) => u.role === "tourist").length,
-        owners: memory.users.filter((u) => u.role === "owner").length,
-        visits: memory.visits.length,
-        reviews: memory.reviews.filter((r) => r.status === "published").length,
-        redemptions: memory.userRewards.length,
-      },
-      popular: [...approved].sort((a, b) => b.viewCount - a.viewCount).slice(0, 8),
-      mostVisited: [...approved].sort((a, b) => b.visitCount - a.visitCount).slice(0, 8),
-      mostFavorited: approved
-        .map((s) => ({ ...s, favs: memory.favorites.filter((f) => f.spotId === s.id).length }))
-        .sort((a, b) => b.favs - a.favs)
-        .slice(0, 8),
-      mostSearched: [...searchCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([query, count]) => ({ query, count })),
-      categories: byCat,
-      ratingTrends: approved.map((s) => {
-        const revs = memory.reviews.filter((r) => r.spotId === s.id && r.status === "published");
-        const avg = revs.length ? revs.reduce((a, r) => a + r.rating, 0) / revs.length : 0;
-        return { name: s.name, rating: Number(avg.toFixed(2)), reviews: revs.length };
-      }),
-      recentActivity: memory.auditLogs.slice(0, 20),
-    };
+
+  async setOwnerApp(id: string, status: string) {
+    return target().setOwnerApp(id, status);
   },
-  snapshot() {
-    return memory;
+
+  async reports() {
+    return target().reports();
+  },
+
+  async addReport(report: any) {
+    return target().addReport(report);
+  },
+
+  async saveRefresh(userId: string, tokenHash: string, expiresAt: string): Promise<void> {
+    return target().saveRefresh(userId, tokenHash, expiresAt);
+  },
+
+  async findRefresh(tokenHash: string): Promise<any | null> {
+    return target().findRefresh(tokenHash);
+  },
+
+  async revokeRefresh(tokenHash: string): Promise<void> {
+    return target().revokeRefresh(tokenHash);
+  },
+
+  async saveReset(userId: string, tokenHash: string, expiresAt: string): Promise<void> {
+    return target().saveReset(userId, tokenHash, expiresAt);
+  },
+
+  async consumeReset(tokenHash: string): Promise<any | null> {
+    return target().consumeReset(tokenHash);
+  },
+
+  async analytics() {
+    return target().analytics();
   },
 };
 
@@ -508,8 +292,8 @@ export function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export function spotRating(spotId: string) {
-  const reviews = memory.reviews.filter((r) => r.spotId === spotId && r.status === "published");
+export async function spotRating(spotId: string) {
+  const reviews = await store.reviewsForSpot(spotId);
   const avg = reviews.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 0;
   const dist = [1, 2, 3, 4, 5].map((n) => reviews.filter((r) => r.rating === n).length);
   return { average: Number(avg.toFixed(2)), count: reviews.length, distribution: dist };

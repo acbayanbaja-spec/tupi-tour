@@ -208,9 +208,18 @@ function OverviewTab({ onNavigate }: { onNavigate: (t: Tab) => void }) {
               <h2 className="font-serif text-xl font-bold text-forest">Engagement by Category</h2>
               <p className="text-xs text-forest/60">Total visitor view impressions per tourism sector</p>
             </div>
-            <span className="rounded-full bg-cream px-3 py-1 text-xs font-semibold text-forest">
-              Tupi Tourism Hub
-            </span>
+            <div className="flex items-center gap-2">
+              <a
+                href="/api/admin/export-csv"
+                download="tupi-spots-report.csv"
+                className="inline-flex items-center gap-1.5 rounded-full border border-forest/15 bg-cream px-3 py-1 text-xs font-bold text-forest hover:bg-forest hover:text-cream transition shadow-sm"
+              >
+                📥 Export CSV
+              </a>
+              <span className="rounded-full bg-cream px-3 py-1 text-xs font-semibold text-forest">
+                Tupi Tourism Hub
+              </span>
+            </div>
           </div>
           <div className="mt-6 h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -452,7 +461,20 @@ function SpotsTab() {
                 <Star size={16} className={spot.featured ? "fill-gold text-gold-600" : ""} />
               </button>
 
-              {spot.status !== "approved" && (
+              <button
+                    type="button"
+                    onClick={async () => {
+                      await api(`/api/admin/spots/${spot.id}/verify`, { method: "POST", body: JSON.stringify({ status: "verified" }) });
+                      toast.success("Verified destination freshness!");
+                      q.refetch();
+                    }}
+                    className="rounded-xl border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs font-bold text-emerald-800 hover:bg-emerald-100"
+                    title="Verify destination freshness"
+                  >
+                    ✓ Verify Freshness
+                  </button>
+
+                  {spot.status !== "approved" && (
                 <button
                   type="button"
                   onClick={() => updateStatus(spot.id, "approved")}

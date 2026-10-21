@@ -7,6 +7,8 @@ import {
   Copy,
   Gift,
   QrCode,
+  Search,
+  ShieldCheck,
   Sparkles,
   Ticket,
   TrendingUp,
@@ -16,8 +18,9 @@ import Image from "next/image";
 import { useState } from "react";
 import { toast } from "sonner";
 import { RequireAuth } from "@/components/require-auth";
-import { api } from "@/lib/api";
+import { api, type Voucher } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useI18n } from "@/lib/i18n";
 
 export default function RewardsPage() {
   return (
@@ -29,8 +32,15 @@ export default function RewardsPage() {
 
 function RewardsPortal() {
   const { user } = useAuth();
+  const { t, lang } = useI18n();
+
   const [activeTab, setActiveTab] = useState<"catalog" | "vouchers" | "history">("catalog");
-  const [voucherModal, setVoucherModal] = useState<{ code: string; name: string } | null>(null);
+  const [voucherModal, setVoucherModal] = useState<{ code: string; name: string; expiresAt?: string } | null>(null);
+
+  // Staff verification state (Feature 5)
+  const [verifyCode, setVerifyCode] = useState("");
+  const [inspectedVoucher, setInspectedVoucher] = useState<Voucher | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
 
   const q = useQuery({
     queryKey: ["rewards"],
@@ -44,7 +54,14 @@ function RewardsPortal() {
       }>("/api/rewards"),
   });
 
+  const vouchersQuery = useQuery({
+    queryKey: ["vouchers"],
+    queryFn: () => api<{ vouchers: Voucher[] }>("/api/vouchers"),
+    enabled: Boolean(user),
+  });
+
   const points = q.data?.points ?? user?.points ?? 0;
+  const userVouchers = vouchersQuery.data?.vouchers || [];
 
   // Membership Tier calculation
   const tier =
@@ -60,11 +77,48 @@ function RewardsPortal() {
       return;
     }
     try {
-      await api(`/api/rewards/${reward.id}/redeem`, { method: "POST" });
-      const randomCode = `TUPI-${Math.random().toString(36).substring(2, 7).toUpperCase()}-${Math.floor(1000 + Math.random() * 9000)}`;
-      setVoucherModal({ code: randomCode, name: reward.name });
+      const res = await api<{ voucher: Voucher; reward: any }>(`/api/rewards/${reward.id}/redeem`, {
+        method: "POST",
+      });
+      setVoucherModal({
+        code: res.voucher.code,
+        name: reward.name,
+        expiresAt: res.voucher.expiresAt,
+      });
       toast.success(`Redeemed "${reward.name}"!`);
       q.refetch();
+      vouchersQuery.refetch();
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
+  // Staff / Host Verification Functions (Feature 5)
+  async function inspectCode() {
+    if (!verifyCode.trim()) return;
+    setIsVerifying(true);
+    try {
+      const res = await api<{ voucher: Voucher }>(`/api/vouchers/${encodeURIComponent(verifyCode.trim())}/verify`);
+      setInspectedVoucher(res.voucher);
+      toast.success("Voucher located!");
+    } catch (err) {
+      toast.error((err as Error).message);
+      setInspectedVoucher(null);
+    } finally {
+      setIsVerifying(false);
+    }
+  }
+
+  async function claimInspected() {
+    if (!inspectedVoucher) return;
+    try {
+      await api(`/api/vouchers/${encodeURIComponent(inspectedVoucher.code)}/claim`, {
+        method: "POST",
+      });
+      toast.success(`Voucher ${inspectedVoucher.code} successfully marked as REDEEMED!`);
+      setInspectedVoucher(null);
+      setVerifyCode("");
+      vouchersQuery.refetch();
     } catch (err) {
       toast.error((err as Error).message);
     }
@@ -98,7 +152,9 @@ function RewardsPortal() {
                 </div>
                 <div className="text-right">
                   <span className="text-[11px] text-cream/70 uppercase">Total Available</span>
-                  <p className="font-serif text-4xl font-bold text-gold">{points.toLocaleString()} <span className="text-sm font-sans font-normal text-cream">pts</span></p>
+                  <p className="font-serif text-4xl font-bold text-gold">
+                    {points.toLocaleString()} <span className="text-sm font-sans font-normal text-cream">pts</span>
+                  </p>
                 </div>
               </div>
 
@@ -108,44 +164,120 @@ function RewardsPortal() {
                   <span>Current Tier</span>
                   <span>{tier.next}</span>
                 </div>
-                <div className="h-2 w-full overflow-hidden rounded-full bg-white/20">
-                  <div className="h-full bg-gold transition-all duration-700" style={{ width: `${Math.min(100, Math.max(10, tier.progress))}%` }} />
+                <div className="h-2 w-full overflow-hidden rounded-full bg-black/20">
+                  <div
+                    className="h-full bg-gold transition-all duration-500 rounded-full"
+                    style={{ width: `${Math.min(100, Math.max(0, tier.progress))}%` }}
+                  />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Tab navigation */}
-          <div className="mt-8 flex gap-4 border-b border-forest/10">
-            {[
-              { id: "catalog", label: "Catalog & Vouchers", icon: Gift },
-              { id: "history", label: "Points Ledger", icon: TrendingUp },
-            ].map(({ id, label, icon: Icon }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setActiveTab(id as typeof activeTab)}
-                className={`flex items-center gap-2 border-b-2 pb-3 text-sm font-semibold transition ${
-                  activeTab === id ? "border-forest text-forest" : "border-transparent text-forest/60 hover:text-forest"
-                }`}
-              >
-                <Icon size={16} /> {label}
-              </button>
-            ))}
+          {/* Navigation Tabs */}
+          <div className="mt-8 flex flex-wrap gap-2 border-t border-forest/10 pt-4">
+            <button
+              type="button"
+              onClick={() => setActiveTab("catalog")}
+              className={`flex items-center gap-2 rounded-full px-5 py-2 text-xs font-bold transition ${
+                activeTab === "catalog" ? "bg-forest text-cream shadow-sm" : "bg-cream text-forest hover:bg-forest/10"
+              }`}
+            >
+              <Gift size={15} /> Rewards Catalog
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("vouchers")}
+              className={`flex items-center gap-2 rounded-full px-5 py-2 text-xs font-bold transition ${
+                activeTab === "vouchers" ? "bg-forest text-cream shadow-sm" : "bg-cream text-forest hover:bg-forest/10"
+              }`}
+            >
+              <Ticket size={15} /> My Vouchers ({userVouchers.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("history")}
+              className={`flex items-center gap-2 rounded-full px-5 py-2 text-xs font-bold transition ${
+                activeTab === "history" ? "bg-forest text-cream shadow-sm" : "bg-cream text-forest hover:bg-forest/10"
+              }`}
+            >
+              <TrendingUp size={15} /> Points History
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Main Catalog Body */}
-      <main className="mx-auto max-w-6xl px-4 pt-8 sm:px-6">
+      {/* Main Body */}
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6">
+        {/* Host / Staff Voucher Verification Portal (Feature 5) */}
+        {(user?.role === "admin" || user?.role === "owner") && (
+          <div className="mb-8 rounded-3xl border border-forest/15 bg-white p-6 shadow-sm">
+            <div className="flex items-center gap-2 text-forest">
+              <ShieldCheck className="text-gold" size={20} />
+              <h2 className="font-serif text-lg font-bold">Host / Staff Voucher Verification Portal</h2>
+            </div>
+            <p className="text-xs text-forest/70 mt-1">
+              Verify and redeem customer vouchers presented at your attraction or tourism desk.
+            </p>
+
+            <div className="mt-4 flex flex-col sm:flex-row gap-2 max-w-md">
+              <input
+                value={verifyCode}
+                onChange={(e) => setVerifyCode(e.target.value.toUpperCase())}
+                placeholder="Enter Code (e.g. TUPI-ABCD-1234)"
+                className="flex-1 rounded-full border border-forest/20 px-4 py-2 font-mono text-xs uppercase"
+              />
+              <button
+                type="button"
+                onClick={inspectCode}
+                disabled={isVerifying || !verifyCode.trim()}
+                className="rounded-full bg-forest px-5 py-2 text-xs font-bold text-cream hover:bg-forest-800 disabled:opacity-50"
+              >
+                {isVerifying ? "Checking..." : "Inspect Code"}
+              </button>
+            </div>
+
+            {inspectedVoucher && (
+              <div className="mt-4 rounded-2xl bg-cream/80 p-4 border border-forest/15 max-w-md">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono font-bold text-forest text-sm">{inspectedVoucher.code}</span>
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
+                      inspectedVoucher.status === "active"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : "bg-rose-100 text-rose-800"
+                    }`}
+                  >
+                    {inspectedVoucher.status}
+                  </span>
+                </div>
+                <p className="text-xs font-bold text-forest mt-1">{inspectedVoucher.rewardName}</p>
+                <p className="text-[11px] text-forest/60 mt-1">
+                  Expires: {new Date(inspectedVoucher.expiresAt).toLocaleDateString()}
+                </p>
+
+                {inspectedVoucher.status === "active" && (
+                  <button
+                    type="button"
+                    onClick={claimInspected}
+                    className="mt-3 w-full rounded-full bg-emerald-700 py-2 text-xs font-bold text-cream hover:bg-emerald-800 transition"
+                  >
+                    ✓ Confirm & Claim Voucher Now
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 1: Catalog */}
         {activeTab === "catalog" && (
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="font-serif text-2xl font-bold text-forest">Redeem Local Perks</h2>
-                <p className="text-xs text-forest/60">Official souvenirs, tasting discounts, and municipal partner perks.</p>
-              </div>
-              <span className="text-xs font-semibold text-forest/70">{q.data?.rewards.length || 0} items available</span>
+            <div>
+              <h2 className="font-serif text-2xl font-bold text-forest">Redeem Local Tupi Rewards</h2>
+              <p className="text-xs text-forest/70">
+                Redeem your points for authentic fruit tasting notes, stickers, and local farm experiences.
+              </p>
             </div>
 
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -154,18 +286,17 @@ function RewardsPortal() {
                 return (
                   <div
                     key={r.id}
-                    className="flex flex-col justify-between overflow-hidden rounded-3xl border border-forest/10 bg-white p-6 shadow-sm transition hover:shadow-md hover:border-forest/20"
+                    className="flex flex-col justify-between rounded-3xl border border-forest/10 bg-white p-6 shadow-sm hover:shadow-md transition"
                   >
                     <div>
                       <div className="flex items-center justify-between">
-                        <span className="rounded-full bg-gold/20 px-3 py-1 text-xs font-bold text-forest">
-                          {r.pointsCost} Points
+                        <span className="rounded-full bg-gold/20 px-3 py-1 font-mono text-xs font-bold text-forest">
+                          {r.pointsCost} points
                         </span>
-                        <span className="text-xs text-forest/60">
-                          {r.stock > 0 ? `${r.stock} in stock` : "Out of stock"}
+                        <span className="text-[11px] text-moss font-semibold">
+                          {r.stock > 0 ? `${r.stock} left in stock` : "Out of stock"}
                         </span>
                       </div>
-
                       <h3 className="mt-4 font-serif text-xl font-bold text-forest">{r.name}</h3>
                       <p className="mt-2 text-xs text-forest/70 leading-relaxed">{r.description}</p>
                     </div>
@@ -195,7 +326,91 @@ function RewardsPortal() {
           </div>
         )}
 
-        {/* Points Ledger Tab */}
+        {/* Tab 2: My Vouchers (Feature 5: Verifiable Vouchers) */}
+        {activeTab === "vouchers" && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="font-serif text-2xl font-bold text-forest">Your Claimed Travel Vouchers</h2>
+              <p className="text-xs text-forest/70">
+                Show these verifiable voucher codes at participating Tupi spots or the municipal tourism desk.
+              </p>
+            </div>
+
+            {userVouchers.length === 0 ? (
+              <div className="rounded-3xl border border-dashed border-forest/20 p-12 text-center bg-white/40">
+                <Ticket className="mx-auto text-forest/30 mb-3" size={40} />
+                <h3 className="font-serif text-lg font-bold text-forest">No Vouchers Yet</h3>
+                <p className="text-xs text-forest/60 max-w-sm mx-auto mt-1">
+                  Redeem your eco-points in the Rewards Catalog to unlock stickers, fruit tasting notes, and discounts.
+                </p>
+              </div>
+            ) : (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {userVouchers.map((v) => {
+                  const isActive = v.status === "active";
+                  return (
+                    <div
+                      key={v.id}
+                      className={`rounded-3xl border p-6 shadow-sm flex flex-col justify-between ${
+                        isActive ? "bg-white border-forest/15" : "bg-cream/40 border-forest/10 opacity-75"
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span
+                            className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                              isActive ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700"
+                            }`}
+                          >
+                            {v.status}
+                          </span>
+                          <span className="text-[10px] text-forest/60 font-mono">
+                            Expires: {new Date(v.expiresAt).toLocaleDateString()}
+                          </span>
+                        </div>
+
+                        <h3 className="mt-3 font-serif text-lg font-bold text-forest">{v.rewardName || "Reward Perk"}</h3>
+                        {v.rewardDescription && (
+                          <p className="text-xs text-forest/70 mt-1 line-clamp-2">{v.rewardDescription}</p>
+                        )}
+
+                        <div className="mt-4 rounded-2xl bg-cream p-3 border border-forest/10 text-center">
+                          <span className="text-[10px] uppercase font-bold text-forest/60 block">Voucher Code</span>
+                          <span className="font-mono text-base font-bold text-forest tracking-wider select-all">
+                            {v.code}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 pt-3 border-t border-forest/10 flex items-center justify-between text-xs">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(v.code);
+                            toast.success("Voucher code copied!");
+                          }}
+                          className="inline-flex items-center gap-1 font-semibold text-forest hover:text-emerald-700"
+                        >
+                          <Copy size={13} /> Copy Code
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setVoucherModal({ code: v.code, name: v.rewardName || "Reward Voucher", expiresAt: v.expiresAt })}
+                          className="font-bold text-gold hover:underline"
+                        >
+                          View Pass →
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 3: Points History */}
         {activeTab === "history" && (
           <div className="space-y-4">
             <h2 className="font-serif text-2xl font-bold text-forest">Points History & Ledger</h2>
@@ -249,7 +464,7 @@ function RewardsPortal() {
             </div>
 
             <span className="mt-4 inline-block text-xs font-bold uppercase tracking-wider text-moss">
-              Voucher Redeemed
+              Verifiable Travel Voucher
             </span>
             <h3 className="font-serif text-2xl font-bold text-forest">{voucherModal.name}</h3>
 
@@ -258,8 +473,13 @@ function RewardsPortal() {
               <p className="mt-1 font-mono text-xl font-bold tracking-wider text-forest select-all">
                 {voucherModal.code}
               </p>
+              {voucherModal.expiresAt && (
+                <p className="text-[10px] text-forest/50 mt-1">
+                  Valid until {new Date(voucherModal.expiresAt).toLocaleDateString()}
+                </p>
+              )}
               <div className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-forest/60">
-                <QrCode size={14} /> Present to participating spot or tourism desk
+                <QrCode size={14} /> Present code at attraction for staff verification
               </div>
             </div>
 
