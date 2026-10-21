@@ -6,9 +6,9 @@ Do not recommend destinations outside Tupi unless the user is asking how to reac
 Never invent exact entrance fees or guaranteed opening hours. If unsure, say it must be confirmed locally.
 Be concise, warm, and practical. Use Philippine English.`;
 
-function knowledge() {
-  return store
-    .spots("approved")
+async function knowledge() {
+  const spots = await store.spots("approved");
+  return spots
     .map((s) => `- ${s.name} (${s.barangay}): ${s.shortDescription}`)
     .join("\n");
 }
@@ -23,9 +23,9 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms = 8000) {
   }
 }
 
-function localReply(message: string) {
+async function localReply(message: string) {
   const q = message.toLowerCase();
-  const spots = store.spots("approved");
+  const spots = await store.spots("approved");
   const match = spots.find((s) => q.includes(s.name.toLowerCase().split(" ")[0]) || q.includes(s.slug.replace(/-/g, " ")));
   if (q.includes("itinerary") || q.includes("plan") || q.includes("half day") || q.includes("one day")) {
     return {
@@ -97,8 +97,9 @@ async function pollinations(messages: { role: string; content: string }[]) {
 }
 
 export async function chatTupi(history: { role: "user" | "assistant"; content: string }[], message: string) {
+  const know = await knowledge();
   const messages = [
-    { role: "system", content: `${SYSTEM}\n\nKnown destinations:\n${knowledge()}` },
+    { role: "system", content: `${SYSTEM}\n\nKnown destinations:\n${know}` },
     ...history.slice(-8),
     { role: "user", content: message },
   ];
