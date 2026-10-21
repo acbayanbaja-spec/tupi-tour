@@ -378,6 +378,24 @@ export async function runMigrations(): Promise<void> {
         -- 23. Idempotent Foreign Key Verification & Restoration
         DO $$
         BEGIN
+          -- Nullify or clean invalid orphan references if any exist from legacy operations
+          UPDATE tourist_spots SET category_id = NULL WHERE category_id IS NOT NULL AND category_id NOT IN (SELECT id FROM categories);
+          UPDATE tourist_spots SET owner_id = NULL WHERE owner_id IS NOT NULL AND owner_id NOT IN (SELECT id FROM users);
+          DELETE FROM tourist_spot_images WHERE spot_id NOT IN (SELECT id FROM tourist_spots);
+          DELETE FROM favorites WHERE user_id NOT IN (SELECT id FROM users) OR spot_id NOT IN (SELECT id FROM tourist_spots);
+          DELETE FROM reviews WHERE user_id NOT IN (SELECT id FROM users) OR spot_id NOT IN (SELECT id FROM tourist_spots);
+          DELETE FROM trips WHERE user_id NOT IN (SELECT id FROM users);
+          DELETE FROM trip_destinations WHERE trip_id NOT IN (SELECT id FROM trips) OR spot_id NOT IN (SELECT id FROM tourist_spots);
+          DELETE FROM user_rewards WHERE user_id NOT IN (SELECT id FROM users);
+          DELETE FROM points_transactions WHERE user_id NOT IN (SELECT id FROM users);
+          DELETE FROM user_badges WHERE user_id NOT IN (SELECT id FROM users) OR badge_id NOT IN (SELECT id FROM badges);
+          DELETE FROM notifications WHERE user_id NOT IN (SELECT id FROM users);
+          DELETE FROM visits WHERE user_id NOT IN (SELECT id FROM users) OR spot_id NOT IN (SELECT id FROM tourist_spots);
+          DELETE FROM owner_verifications WHERE user_id NOT IN (SELECT id FROM users);
+          UPDATE reports SET user_id = NULL WHERE user_id IS NOT NULL AND user_id NOT IN (SELECT id FROM users);
+          DELETE FROM refresh_tokens WHERE user_id NOT IN (SELECT id FROM users);
+          DELETE FROM password_resets WHERE user_id NOT IN (SELECT id FROM users);
+
           IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_schema = 'public' AND constraint_name = 'tourist_spots_category_id_fkey') THEN
             ALTER TABLE tourist_spots ADD CONSTRAINT tourist_spots_category_id_fkey FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL;
           END IF;
