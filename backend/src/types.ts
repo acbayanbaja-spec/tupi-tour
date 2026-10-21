@@ -1,5 +1,7 @@
 export type Role = "tourist" | "owner" | "admin";
 export type SpotStatus = "draft" | "pending" | "under_review" | "approved" | "rejected";
+export type VerificationStatus = "verified" | "unverified" | "outdated" | "under_review";
+export type VoucherStatus = "active" | "redeemed" | "expired" | "cancelled";
 
 export interface User {
   id: string;
@@ -51,6 +53,11 @@ export interface TouristSpot {
   viewCount: number;
   visitCount: number;
   images: { url: string; alt: string }[];
+  lastVerifiedAt?: string;
+  verificationStatus?: VerificationStatus;
+  verifiedBy?: string;
+  safetyGuidance?: string[];
+  emergencyContact?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -79,6 +86,17 @@ export interface Trip {
   updatedAt: string;
 }
 
+export interface SavedRoute {
+  id: string;
+  userId: string;
+  name: string;
+  stops: { spotId: string; name: string; lat: number; lng: number; order: number }[];
+  totalDistanceKm: number;
+  estimatedMinutes: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Reward {
   id: string;
   name: string;
@@ -86,6 +104,21 @@ export interface Reward {
   pointsCost: number;
   stock: number;
   active: boolean;
+}
+
+export interface Voucher {
+  id: string;
+  code: string;
+  userId: string;
+  rewardId: string;
+  rewardName?: string;
+  rewardDescription?: string;
+  status: VoucherStatus;
+  expiresAt: string;
+  redeemedAt?: string;
+  redeemedBy?: string;
+  idempotencyKey?: string;
+  createdAt: string;
 }
 
 export interface Notification {
@@ -105,7 +138,9 @@ export interface DatabaseShape {
   favorites: { userId: string; spotId: string; createdAt: string }[];
   reviews: Review[];
   trips: Trip[];
+  savedRoutes: SavedRoute[];
   rewards: Reward[];
+  vouchers: Voucher[];
   userRewards: { id: string; userId: string; rewardId: string; createdAt: string }[];
   points: { id: string; userId: string; amount: number; reason: string; createdAt: string }[];
   badges: { id: string; slug: string; name: string; description: string }[];

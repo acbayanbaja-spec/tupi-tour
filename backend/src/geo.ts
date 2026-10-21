@@ -1,4 +1,4 @@
-import { store } from "./store.js";
+import { spotRating, store } from "./store.js";
 import type { TouristSpot } from "./types.js";
 
 export function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
@@ -11,19 +11,44 @@ export function haversineKm(a: { lat: number; lng: number }, b: { lat: number; l
   return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
 }
 
-export function enrichSpot(spot: TouristSpot, userId?: string, origin?: { lat: number; lng: number }) {
-  const cats = store.categories();
-  const rating = store.snapshot().reviews.filter((r) => r.spotId === spot.id && r.status === "published");
-  const avg = rating.length ? rating.reduce((s, r) => s + r.rating, 0) / rating.length : 0;
+export async function enrichSpot(spot: TouristSpot, userId?: string, origin?: { lat: number; lng: number }) {
+  const cats = await store.categories();
+  const rating = await spotRating(spot.id);
+  const isFav = userId ? await store.isFavorite(userId, spot.id) : false;
+
   return {
     ...spot,
     category: cats.find((c) => c.id === spot.categoryId) || null,
-    rating: { average: Number(avg.toFixed(2)), count: rating.length },
-    favoriteCount: store.snapshot().favorites.filter((f) => f.spotId === spot.id).length,
-    isFavorite: userId ? store.isFavorite(userId, spot.id) : false,
+    rating: { average: rating.average, count: rating.count },
+    isFavorite: isFav,
     distanceKm: origin ? Number(haversineKm(origin, spot).toFixed(2)) : null,
     etaMinutes: origin ? Math.max(8, Math.round((haversineKm(origin, spot) / 28) * 60)) : null,
   };
+}
+
+export async function enrichSpots(spots: TouristSpot[], userId?: string, origin?: { lat: number; lng: number }) {
+  const cats = await store.categories();
+  const catMap = new Map(cats.map((c) => [c.id, c]));
+
+  let userFavs = new Set<string>();
+  if (userId) {
+    const favs = await store.favoritesFor(userId);
+    userFavs = new Set(favs.map((f) => f.spotId));
+  }
+
+  return Promise.all(
+    spots.map(async (spot) => {
+      const rating = await spotRating(spot.id);
+      return {
+        ...spot,
+        category: catMap.get(spot.categoryId) || null,
+        rating: { average: rating.average, count: rating.count },
+        isFavorite: userFavs.has(spot.id),
+        distanceKm: origin ? Number(haversineKm(origin, spot).toFixed(2)) : null,
+        etaMinutes: origin ? Math.max(8, Math.round((haversineKm(origin, spot) / 28) * 60)) : null,
+      };
+    })
+  );
 }
 
 function levenshtein(a: string, b: string) {
@@ -41,8 +66,8 @@ function levenshtein(a: string, b: string) {
   return m[a.length][b.length];
 }
 
-export function searchSpots(query: string, spots: TouristSpot[]) {
-  const q = query.trim().toLowerCase();
+export function searchSpots(queryStr: string, spots: TouristSpot[]) {
+  const q = queryStr.trim().toLowerCase();
   if (!q) return spots;
   return spots
     .map((s) => {
@@ -60,54 +85,67 @@ export function searchSpots(query: string, spots: TouristSpot[]) {
     .map((x) => x.s);
 }
 
-export function recommend(opts: {
+export async function recommend(opts: {
   userId?: string;
   lat?: number;
   lng?: number;
   categoryIds?: string[];
 }) {
-  const spots = store.spots("approved");
+  const spots = await store.spots("approved");
   const origin = opts.lat != null && opts.lng != null ? { lat: opts.lat, lng: opts.lng } : undefined;
   const favCats = new Set(opts.categoryIds || []);
+
   if (opts.userId) {
-    store.favoritesFor(opts.userId).forEach((f) => {
-      const spot = store.getSpot(f.spotId);
+    const favs = await store.favoritesFor(opts.userId);
+    for (const f of favs) {
+      const spot = await store.getSpot(f.spotId);
       if (spot) favCats.add(spot.categoryId);
-    });
-    const user = store.findUserById(opts.userId);
-    user?.interests.forEach((slug) => {
-      const cat = store.categories().find((c) => c.slug === slug || c.id === slug);
-      if (cat) favCats.add(cat.id);
-    });
-  }
-  const visited = new Set(opts.userId ? store.visitsFor(opts.userId).map((v) => v.spotId) : []);
-  const scored = spots.map((s) => {
-    let score = s.popularityScore;
-    const reviews = store.reviewsForSpot(s.id);
-    const avg = reviews.length ? reviews.reduce((a, r) => a + r.rating, 0) / reviews.length : 4;
-    score += avg * 8;
-    if (favCats.has(s.categoryId)) score += 18;
-    if (visited.has(s.id)) score -= 25;
-    if (origin) {
-      const km = haversineKm(origin, s);
-      score += Math.max(0, 20 - km);
     }
-    if (s.featured) score += 6;
-    return { s, score };
-  });
+    const user = await store.findUserById(opts.userId);
+    if (user?.interests) {
+      const allCats = await store.categories();
+      for (const slug of user.interests) {
+        const cat = allCats.find((c) => c.slug === slug || c.id === slug);
+        if (cat) favCats.add(cat.id);
+      }
+    }
+  }
+
+  const visits = opts.userId ? await store.visitsFor(opts.userId) : [];
+  const visited = new Set(visits.map((v) => v.spotId));
+
+  const scored = await Promise.all(
+    spots.map(async (s) => {
+      let score = s.popularityScore;
+      const rating = await spotRating(s.id);
+      score += rating.average * 8;
+      if (favCats.has(s.categoryId)) score += 18;
+      if (visited.has(s.id)) score -= 25;
+      if (origin) {
+        const km = haversineKm(origin, s);
+        score += Math.max(0, 20 - km);
+      }
+      if (s.featured) score += 6;
+      return { s, score };
+    })
+  );
+
   scored.sort((a, b) => b.score - a.score);
+  const allCategories = await store.categories();
   const because = favCats.size
     ? "Because you like " +
       [...favCats]
-        .map((id) => store.categories().find((c) => c.id === id)?.name)
+        .map((id) => allCategories.find((c) => c.id === id)?.name)
         .filter(Boolean)
         .join(", ")
     : "Popular in Tupi";
-  return {
-    because,
-    items: scored.slice(0, 8).map((x, i) => ({
+
+  const enrichedItems = await Promise.all(
+    scored.slice(0, 8).map(async (x, i) => ({
       reason: i < 3 && origin ? "Popular near you" : x.s.featured ? "Highly rated destinations" : because,
-      spot: enrichSpot(x.s, opts.userId, origin),
-    })),
-  };
+      spot: await enrichSpot(x.s, opts.userId, origin),
+    }))
+  );
+
+  return { because, items: enrichedItems };
 }
