@@ -4,6 +4,14 @@
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f6f1e7",
-  "theme_color": "#1c3d2e",
-  "description": "Discover tourist spots in Tupi, South Cotabato."
+  "theme_color": "#0f3b26",
+  "description": "Discover tourist spots, highlands, farms, and navigation in Tupi, South Cotabato.",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
 }

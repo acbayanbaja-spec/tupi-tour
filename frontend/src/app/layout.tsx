@@ -11,10 +11,16 @@ export const metadata: Metadata = {
   title: { default: "Tupi Tour — Discover Tupi, South Cotabato", template: "%s · Tupi Tour" },
   description: "Discover, navigate, and plan trips across Tupi, South Cotabato — farms, highlands, fruit parks, and local rewards.",
   metadataBase: new URL("https://tupi-tour.example"),
+  icons: {
+    icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
+    shortcut: "/icon.svg",
+    apple: "/icon.svg",
+  },
   openGraph: {
     title: "Tupi Tour",
     description: "A premium digital tourism platform created specifically for Tupi.",
     type: "website",
+    images: [{ url: "/icon.svg" }],
   },
   manifest: "/manifest.json",
 };
