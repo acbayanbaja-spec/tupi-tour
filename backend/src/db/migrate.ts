@@ -37,9 +37,6 @@ export async function runMigrations(): Promise<void> {
     await withTransaction(async (client) => {
       await client.query(`
         -- 1. Harmonize legacy UUID columns to TEXT (idempotent)
-        -- In earlier versions of Tupi Tour, tables were defined with uuid primary keys.
-        -- We safely convert uuid columns to text so both UUIDs and human-readable IDs ('user-admin', 'sp-sg-farm')
-        -- coexist seamlessly without foreign key type incompatibility.
         DO $$ 
         DECLARE
             r RECORD;
@@ -474,15 +471,56 @@ export async function runMigrations(): Promise<void> {
   if (!applied.has(2)) {
     console.log("📦 Applying Migration 002: Seed & Import Initial Relational Data...");
     await withTransaction(async (client) => {
-      // 0. Check and migrate from legacy app_state if present and tables are empty
-      try {
-        const appStateRes = await client.query("SELECT data FROM app_state WHERE key = 'main' LIMIT 1");
-        if (appStateRes.rows.length > 0 && appStateRes.rows[0].data) {
-          const legacy = appStateRes.rows[0].data;
-          console.log("Found legacy app_state in Supabase. Checking records to import...");
+      // Step 1: Ensure categories exist FIRST (so spots have valid foreign key references)
+      const catCount = await client.query("SELECT COUNT(*) FROM categories");
+      if (parseInt(catCount.rows[0].count, 10) === 0) {
+        for (const cat of categorySeed()) {
+          await client.query(
+            "INSERT INTO categories (id, slug, name, description, icon) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (slug) DO NOTHING",
+            [cat.id, cat.slug, cat.name, cat.description, cat.icon]
+          );
+        }
+      }
 
-          const uCount = await client.query("SELECT COUNT(*) FROM users");
-          if (parseInt(uCount.rows[0].count, 10) === 0 && Array.isArray(legacy.users)) {
+      // Step 2: Ensure badges exist
+      const badgeCount = await client.query("SELECT COUNT(*) FROM badges");
+      if (parseInt(badgeCount.rows[0].count, 10) === 0) {
+        for (const bd of badgeSeed) {
+          await client.query(
+            "INSERT INTO badges (id, slug, name, description) VALUES ($1, $2, $3, $4) ON CONFLICT (slug) DO NOTHING",
+            [bd.id, bd.slug, bd.name, bd.description]
+          );
+        }
+      }
+
+      // Step 3: Ensure rewards exist
+      const rewardCount = await client.query("SELECT COUNT(*) FROM rewards");
+      if (parseInt(rewardCount.rows[0].count, 10) === 0) {
+        for (const rw of rewardSeed()) {
+          await client.query(
+            "INSERT INTO rewards (id, name, description, points_cost, stock, active) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
+            [rw.id, rw.name, rw.description, rw.pointsCost, rw.stock, rw.active]
+          );
+        }
+      }
+
+      // Step 4: Ensure users exist (check legacy app_state or seed demo users)
+      const userCount = await client.query("SELECT COUNT(*) FROM users");
+      if (parseInt(userCount.rows[0].count, 10) === 0) {
+        let importedUsers = false;
+
+        // Safely check if app_state table exists without failing the transaction
+        const hasAppState = await client.query(`
+          SELECT EXISTS (
+            SELECT 1 FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name = 'app_state'
+          ) AS exists
+        `);
+
+        if (hasAppState.rows[0]?.exists) {
+          const appRes = await client.query("SELECT data FROM app_state WHERE key = 'main' LIMIT 1");
+          const legacy = appRes.rows[0]?.data;
+          if (legacy && Array.isArray(legacy.users) && legacy.users.length > 0) {
             for (const u of legacy.users) {
               await client.query(
                 `INSERT INTO users (id, email, password_hash, name, role, interests, onboarding_complete, email_verified, points, created_at, updated_at)
@@ -503,113 +541,50 @@ export async function runMigrations(): Promise<void> {
                 ]
               );
             }
-          }
-
-          const sCount = await client.query("SELECT COUNT(*) FROM tourist_spots");
-          if (parseInt(sCount.rows[0].count, 10) === 0 && Array.isArray(legacy.spots)) {
-            for (const sp of legacy.spots) {
-              await client.query(
-                `INSERT INTO tourist_spots 
-                 (id, slug, name, category_id, description, short_description, lat, lng, address, barangay, amenities, operating_hours, contact, featured, status, owner_id, data_source, estimated_entrance_fee, popularity_score, view_count, visit_count, last_verified_at, verification_status, safety_guidance, emergency_contact, created_at, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, now(), 'verified', $22, $23, $24, $25)
-                 ON CONFLICT (slug) DO NOTHING`,
-                [
-                  sp.id,
-                  sp.slug,
-                  sp.name,
-                  sp.categoryId,
-                  sp.description,
-                  sp.shortDescription,
-                  sp.lat,
-                  sp.lng,
-                  sp.address,
-                  sp.barangay,
-                  JSON.stringify(sp.amenities || []),
-                  JSON.stringify(sp.operatingHours || {}),
-                  sp.contact || null,
-                  sp.featured || false,
-                  sp.status || "approved",
-                  sp.ownerId || null,
-                  sp.dataSource || "curated",
-                  sp.estimatedEntranceFee || null,
-                  sp.popularityScore || 0,
-                  sp.viewCount || 0,
-                  sp.visitCount || 0,
-                  JSON.stringify(sp.safetyGuidance || ["Wear sturdy shoes", "Carry rain gear", "Respect farm produce"]),
-                  sp.emergencyContact || "MDRRMO Tupi: (083) 228-1000",
-                  sp.createdAt || new Date().toISOString(),
-                  sp.updatedAt || new Date().toISOString(),
-                ]
-              );
-            }
+            importedUsers = true;
+            console.log(`Imported ${legacy.users.length} legacy users from app_state.`);
           }
         }
-      } catch (err) {
-        // app_state table may not exist, safely continue
-      }
 
-      // 1. Check if categories exist
-      const catCount = await client.query("SELECT COUNT(*) FROM categories");
-      if (parseInt(catCount.rows[0].count, 10) === 0) {
-        for (const cat of categorySeed()) {
+        if (!importedUsers) {
+          const hash = async (pwd: string) => bcrypt.hash(pwd, 12);
+          const adminHash = await hash("AdminTupi2026!");
+          const ownerHash = await hash("Owner123!");
+          const touristHash = await hash("Tourist123!");
+
           await client.query(
-            "INSERT INTO categories (id, slug, name, description, icon) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (slug) DO NOTHING",
-            [cat.id, cat.slug, cat.name, cat.description, cat.icon]
+            `INSERT INTO users (id, email, password_hash, name, role, interests, onboarding_complete, email_verified, points)
+             VALUES 
+             ('user-admin', 'admin@tupi.tour', $1, 'Tupi Tourism Admin', 'admin', '[]', true, true, 0),
+             ('user-owner', 'owner@tupi.tour', $2, 'Kablon Farm Owner', 'owner', '["agri-tourism"]', true, true, 40),
+             ('user-tourist', 'tourist@tupi.tour', $3, 'Ana Explorer', 'tourist', '["nature", "agri-tourism"]', true, true, 160)
+             ON CONFLICT (email) DO NOTHING`,
+            [adminHash, ownerHash, touristHash]
+          );
+
+          await client.query(
+            `INSERT INTO owner_verifications (id, user_id, business_name, notes, status, reviewed_at)
+             VALUES ('ov-demo', 'user-owner', 'Glandang Highland Farm', 'Demo owner account for SG Farm area.', 'approved', now())
+             ON CONFLICT (id) DO NOTHING`
           );
         }
       }
 
-      // 2. Check if badges exist
-      const badgeCount = await client.query("SELECT COUNT(*) FROM badges");
-      if (parseInt(badgeCount.rows[0].count, 10) === 0) {
-        for (const bd of badgeSeed) {
-          await client.query(
-            "INSERT INTO badges (id, slug, name, description) VALUES ($1, $2, $3, $4) ON CONFLICT (slug) DO NOTHING",
-            [bd.id, bd.slug, bd.name, bd.description]
-          );
-        }
-      }
-
-      // 3. Check if rewards exist
-      const rewardCount = await client.query("SELECT COUNT(*) FROM rewards");
-      if (parseInt(rewardCount.rows[0].count, 10) === 0) {
-        for (const rw of rewardSeed()) {
-          await client.query(
-            "INSERT INTO rewards (id, name, description, points_cost, stock, active) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
-            [rw.id, rw.name, rw.description, rw.pointsCost, rw.stock, rw.active]
-          );
-        }
-      }
-
-      // 4. Check if demo users exist
-      const userCount = await client.query("SELECT COUNT(*) FROM users");
-      if (parseInt(userCount.rows[0].count, 10) === 0) {
-        const hash = async (pwd: string) => bcrypt.hash(pwd, 12);
-        const adminHash = await hash("AdminTupi2026!");
-        const ownerHash = await hash("Owner123!");
-        const touristHash = await hash("Tourist123!");
-
-        await client.query(
-          `INSERT INTO users (id, email, password_hash, name, role, interests, onboarding_complete, email_verified, points)
-           VALUES 
-           ('user-admin', 'admin@tupi.tour', $1, 'Tupi Tourism Admin', 'admin', '[]', true, true, 0),
-           ('user-owner', 'owner@tupi.tour', $2, 'Kablon Farm Owner', 'owner', '["agri-tourism"]', true, true, 40),
-           ('user-tourist', 'tourist@tupi.tour', $3, 'Ana Explorer', 'tourist', '["nature", "agri-tourism"]', true, true, 160)
-           ON CONFLICT (email) DO NOTHING`,
-          [adminHash, ownerHash, touristHash]
-        );
-
-        await client.query(
-          `INSERT INTO owner_verifications (id, user_id, business_name, notes, status, reviewed_at)
-           VALUES ('ov-demo', 'user-owner', 'Glandang Highland Farm', 'Demo owner account for SG Farm area.', 'approved', now())
-           ON CONFLICT (id) DO NOTHING`
-        );
-      }
-
-      // 5. Check if tourist spots exist
+      // Step 5: Ensure tourist spots exist (with valid category and owner foreign keys)
       const spotCount = await client.query("SELECT COUNT(*) FROM tourist_spots");
       if (parseInt(spotCount.rows[0].count, 10) === 0) {
+        // Collect valid category IDs and user IDs to guarantee foreign key integrity
+        const validCats = await client.query<{ id: string }>("SELECT id FROM categories");
+        const validCatIds = new Set(validCats.rows.map((c) => c.id));
+        const validUsers = await client.query<{ id: string }>("SELECT id FROM users");
+        const validUserIds = new Set(validUsers.rows.map((u) => u.id));
+
         for (const sp of spotSeed()) {
+          const catId = sp.categoryId && validCatIds.has(sp.categoryId) ? sp.categoryId : null;
+          const ownerId = sp.ownerId && validUserIds.has(sp.ownerId) 
+            ? sp.ownerId 
+            : (sp.id === "sp-sg-farm" && validUserIds.has("user-owner") ? "user-owner" : null);
+
           await client.query(
             `INSERT INTO tourist_spots 
              (id, slug, name, category_id, description, short_description, lat, lng, address, barangay, amenities, operating_hours, contact, featured, status, owner_id, data_source, estimated_entrance_fee, popularity_score, view_count, visit_count, last_verified_at, verification_status, safety_guidance, emergency_contact)
@@ -619,7 +594,7 @@ export async function runMigrations(): Promise<void> {
               sp.id,
               sp.slug,
               sp.name,
-              sp.categoryId,
+              catId,
               sp.description,
               sp.shortDescription,
               sp.lat,
@@ -631,7 +606,7 @@ export async function runMigrations(): Promise<void> {
               sp.contact || null,
               sp.featured || false,
               sp.status || "approved",
-              sp.ownerId || (sp.id === "sp-sg-farm" ? "user-owner" : null),
+              ownerId,
               sp.dataSource || "curated",
               sp.estimatedEntranceFee || null,
               sp.popularityScore || 0,
