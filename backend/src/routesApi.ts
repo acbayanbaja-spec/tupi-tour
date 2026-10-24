@@ -621,7 +621,9 @@ api.delete("/trips/:id", requireAuth, async (req: AuthedRequest, res) => {
 api.post("/itinerary", optionalAuth, async (req: AuthedRequest, res) => {
   const parsed = z
     .object({
-      hours: z.number().min(2).max(14),
+      startTime: z.string().optional(),
+      endTime: z.string().optional(),
+      hours: z.number().min(1).max(16).optional(),
       budget: z.number().min(0),
       interests: z.array(z.string()).default([]),
       travelers: z.number().int().min(1).max(12),

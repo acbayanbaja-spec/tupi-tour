@@ -4,7 +4,9 @@ import { store } from "./store.js";
 import type { TouristSpot } from "./types.js";
 
 export interface PlannerInput {
-  hours: number;
+  hours?: number;
+  startTime?: string;
+  endTime?: string;
   budget: number;
   interests: string[];
   travelers: number;
@@ -17,7 +19,7 @@ export interface PlannerInput {
 }
 
 /**
- * Format total minutes from midnight into 12-hour clock format (e.g., 480 -> "08:00 AM", 780 -> "01:00 PM")
+ * Format total minutes from midnight into 12-hour clock format (e.g., 480 -> "08:00 AM", 780 -> "01:00 PM", 900 -> "03:00 PM")
  */
 export function formatClock(totalMinutes: number): string {
   const h = Math.floor(totalMinutes / 60) % 24;
@@ -27,6 +29,35 @@ export function formatClock(totalMinutes: number): string {
   const hh = String(displayH).padStart(2, "0");
   const mm = String(m).padStart(2, "0");
   return `${hh}:${mm} ${period}`;
+}
+
+/**
+ * Parse a time string into minutes from midnight.
+ * Supports "HH:mm" (24h e.g. "09:00", "15:00") and 12-hour formatted strings (e.g. "9:00 AM", "3:00 PM", "9am", "3pm").
+ */
+export function parseTimeToMinutes(timeStr?: string): number {
+  if (!timeStr || typeof timeStr !== "string") return 8 * 60; // 08:00 AM default
+  const trimmed = timeStr.trim().toUpperCase();
+  const isPM = trimmed.includes("PM");
+  const isAM = trimmed.includes("AM");
+  const clean = trimmed.replace(/AM|PM/g, "").trim();
+  const parts = clean.split(":");
+  if (parts.length >= 2) {
+    let h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) || 0;
+    if (isNaN(h)) h = 8;
+    if (isPM && h < 12) h += 12;
+    if (isAM && h === 12) h = 0;
+    return Math.max(0, Math.min(24 * 60 - 1, h * 60 + m));
+  }
+  const val = parseFloat(clean);
+  if (!isNaN(val)) {
+    let h = Math.floor(val);
+    if (isPM && h < 12) h += 12;
+    if (isAM && h === 12) h = 0;
+    return Math.max(0, Math.min(24 * 60 - 1, h * 60));
+  }
+  return 8 * 60;
 }
 
 /**
@@ -58,8 +89,7 @@ export function computeTransportCost(
 
 /**
  * Budget-constrained and duration-aware spot selection for Tupi, South Cotabato.
- * Ensures the stopover count is calibrated to what the tourist can afford and fit in time.
- * e.g. 2 stops for 2-3h, 3-4 affordable stops for 4-5h within ₱1,000 budget.
+ * Calibrates stopover destinations to what the tourist can afford and fit in their time window (e.g. 9 AM to 3 PM).
  */
 async function pickSpots(input: PlannerInput) {
   const origin = {
@@ -75,17 +105,26 @@ async function pickSpots(input: PlannerInput) {
   const cats = allCategories.filter((c) => input.interests.includes(c.slug) || input.interests.includes(c.id));
   const catIds = new Set(cats.map((c) => c.id));
 
+  // Determine effective duration from start and end time (or fallback to hours)
+  let effectiveHours = input.hours || 5;
+  if (input.startTime && input.endTime) {
+    const sMin = parseTimeToMinutes(input.startTime);
+    let eMin = parseTimeToMinutes(input.endTime);
+    if (eMin <= sMin) eMin = Math.min(24 * 60 - 1, sMin + 180);
+    effectiveHours = Math.max(1, (eMin - sMin) / 60);
+  }
+
   // Determine stopover limit based on duration & budget:
   // - 2 to 3 hours: 2 stops max
   // - 4 to 5 hours: 3 to 4 stops max (tailored to affordability)
-  // - 6 to 7 hours: 4 stops max
+  // - 6 to 7 hours: 4 stops max (e.g. 9 AM to 3 PM is 6 hours)
   // - 8+ hours: 4 to 5 stops max
   let maxStops: number;
-  if (input.hours <= 3) {
+  if (effectiveHours <= 3) {
     maxStops = 2;
-  } else if (input.hours <= 5) {
+  } else if (effectiveHours <= 5) {
     maxStops = 4;
-  } else if (input.hours <= 7) {
+  } else if (effectiveHours <= 7) {
     maxStops = 4;
   } else {
     maxStops = 5;
@@ -178,22 +217,25 @@ async function pickSpots(input: PlannerInput) {
   // Ensure stops are ordered logically by proximity to minimize backtracking
   selected.sort((a, b) => haversineKm(origin, a) - haversineKm(origin, b));
 
-  return { origin, ranked: selected, tupiApproved };
+  return { origin, ranked: selected, tupiApproved, effectiveHours };
 }
 
 async function generateAiItineraryNotes(
   rankedNames: string[],
   input: PlannerInput,
   totalCost: number,
-  remainingBudget: number
+  remainingBudget: number,
+  startTimeStr: string,
+  endTimeStr: string,
+  effectiveHours: number
 ): Promise<string> {
   const prompt = `You are the Tupi Tour AI Assistant for Tupi, South Cotabato, Philippines.
-The traveler has requested an exact ${input.hours}-hour trip for ${input.travelers} traveler(s), traveling via ${input.transport} at a ${input.intensity} pace.
+The traveler has requested a tour from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hours) for ${input.travelers} traveler(s), traveling via ${input.transport} at a ${input.intensity} pace.
 Their stated total budget is PHP ${input.budget}. The estimated total cost is PHP ${totalCost} (PHP ${remainingBudget} remaining).
 Planned stops from the verified municipal catalog: ${rankedNames.join(", ")}.
 
 Provide 2-3 concise, practical sentences with authentic local tips for Tupi:
-- Highlight that the plan is calibrated to exact ${input.hours} hours and fits within their PHP ${input.budget} budget.
+- Highlight that the schedule runs from ${startTimeStr} to ${endTimeStr} and fits within their PHP ${input.budget} budget.
 - Remind about fruit tasting along the Kablon highway and Mt. Matutum foothill breezes.
 - Remind to carry cash for fruit purchases and on-site entrance verification.
 Do not invent fictional destinations or mention places outside Tupi.`;
@@ -224,11 +266,11 @@ Do not invent fictional destinations or mention places outside Tupi.`;
     // Fall through to deterministic fallback
   }
 
-  return `Planned stops: ${rankedNames.join(", ") || "Tupi town proper and highland viewpoints"}. This exact ${input.hours}-hour tour is budgeted at ₱${totalCost.toLocaleString()} (within your ₱${input.budget.toLocaleString()} target with ₱${remainingBudget.toLocaleString()} remaining). Bring cash for roadside fruit stalls in Kablon and a light jacket for cool Mt. Matutum foothill breezes.`;
+  return `Planned stops: ${rankedNames.join(", ") || "Tupi town proper and highland viewpoints"}. This schedule is calibrated from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hrs) and budgeted at ₱${totalCost.toLocaleString()} (within your ₱${input.budget.toLocaleString()} target with ₱${remainingBudget.toLocaleString()} remaining). Bring cash for roadside fruit stalls in Kablon and a light jacket for cool Mt. Matutum foothill breezes.`;
 }
 
 export async function buildItinerary(input: PlannerInput) {
-  const { origin, ranked: initialRanked, tupiApproved } = await pickSpots(input);
+  const { origin, ranked: initialRanked, tupiApproved, effectiveHours: derivedHours } = await pickSpots(input);
   let ranked = [...initialRanked];
 
   const calculateCircuitKm = (spots: TouristSpot[]) => {
@@ -294,12 +336,28 @@ export async function buildItinerary(input: PlannerInput) {
     }
   }
 
-  // Exact Duration Calculation:
-  // Start time: 08:00 AM (480 minutes from midnight).
-  // Target duration: exactly input.hours * 60 minutes.
-  // The final return arrival MUST occur at exactly 08:00 AM + input.hours.
-  const targetMinutes = Math.round(input.hours * 60);
-  const startMinutes = 8 * 60; // 08:00 AM
+  // Exact Time Window Calculation:
+  // Based on the tourist's given start time and end time (e.g. 9:00 AM to 3:00 PM).
+  const startMinutes = input.startTime
+    ? parseTimeToMinutes(input.startTime)
+    : 8 * 60; // 08:00 AM default
+
+  let endMinutes: number;
+  if (input.endTime) {
+    endMinutes = parseTimeToMinutes(input.endTime);
+  } else if (input.hours) {
+    endMinutes = startMinutes + Math.round(input.hours * 60);
+  } else {
+    endMinutes = startMinutes + Math.round(derivedHours * 60);
+  }
+
+  // Safety guard: ensure endMinutes is at least 2 hours after startMinutes
+  if (endMinutes <= startMinutes) {
+    endMinutes = Math.min(24 * 60 - 1, startMinutes + 180);
+  }
+
+  const targetMinutes = endMinutes - startMinutes;
+  const effectiveHours = +(targetMinutes / 60).toFixed(2);
 
   // Calculate transit legs
   const transitTimes: number[] = [];
@@ -320,9 +378,9 @@ export async function buildItinerary(input: PlannerInput) {
   // - 4-5 hours: 30-min refreshment & fruit break
   // - <4 hours: 0 mins (express trip)
   let breakMinutes = 0;
-  if (input.hours >= 6) {
+  if (effectiveHours >= 6) {
     breakMinutes = 45;
-  } else if (input.hours >= 4) {
+  } else if (effectiveHours >= 4) {
     breakMinutes = 30;
   }
 
@@ -352,7 +410,7 @@ export async function buildItinerary(input: PlannerInput) {
   const remainder = availableStayMinutes % spotCount;
   const stayDurations = ranked.map((_, idx) => baseStay + (idx < remainder ? 1 : 0));
 
-  // Build the detailed timeline blocks
+  // Build the detailed timeline blocks based on tourist's start and end times
   let cursor = startMinutes;
   const blocks: {
     time: string;
@@ -403,11 +461,11 @@ export async function buildItinerary(input: PlannerInput) {
     prevPoint = spot;
   }
 
-  // Return leg: arrives back at starting point / Poblacion at EXACTLY startMinutes + targetMinutes
-  const exactReturnRide = (startMinutes + targetMinutes) - cursor;
+  // Return leg: arrives back at starting point / Poblacion at EXACTLY endMinutes
+  const exactReturnRide = endMinutes - cursor;
   cursor += exactReturnRide;
 
-  const finalArrivalTime = formatClock(cursor);
+  const finalArrivalTime = formatClock(endMinutes);
   const finalRetKm = haversineKm(prevPoint, origin);
 
   blocks.push({
@@ -415,7 +473,7 @@ export async function buildItinerary(input: PlannerInput) {
     title: "Return arrival at starting point / Tupi Poblacion",
     kind: "return",
     minutes: exactReturnRide,
-    note: `Scenic return ride through Tupi highway corridor (~${finalRetKm.toFixed(1)} km). Tour completes on schedule.`,
+    note: `Scenic return ride through Tupi highway corridor (~${finalRetKm.toFixed(1)} km). Tour completes promptly at ${finalArrivalTime}.`,
   });
 
   const over = total > input.budget;
@@ -444,8 +502,19 @@ export async function buildItinerary(input: PlannerInput) {
     );
   }
 
+  const startTimeStr = formatClock(startMinutes);
+  const endTimeStr = formatClock(endMinutes);
+
   const rankedNames = ranked.map((s) => s.name);
-  const aiNotes = await generateAiItineraryNotes(rankedNames, input, total, remainingBudget);
+  const aiNotes = await generateAiItineraryNotes(
+    rankedNames,
+    input,
+    total,
+    remainingBudget,
+    startTimeStr,
+    endTimeStr,
+    effectiveHours
+  );
 
   const alternativesRaw = tupiApproved
     .filter((s) => !ranked.some((r) => r.id === s.id))
@@ -460,20 +529,17 @@ export async function buildItinerary(input: PlannerInput) {
     ? `This itinerary is calibrated to match your exact budget of ₱${input.budget.toLocaleString()}.`
     : `This itinerary is carefully tailored to your ₱${input.budget.toLocaleString()} budget (Estimated total: ₱${total.toLocaleString()}, leaving ₱${remainingBudget.toLocaleString()} remaining).`;
 
-  const startTimeStr = formatClock(startMinutes);
-  const endTimeStr = formatClock(startMinutes + targetMinutes);
-
   return {
-    title: input.hours <= 5 ? `Tupi ${input.hours}-Hour Adventure` : `Tupi ${input.hours}-Hour Full Experience`,
+    title: `Tupi Tour (${startTimeStr} – ${endTimeStr})`,
     generatedAt: new Date().toISOString(),
-    hours: input.hours,
+    hours: effectiveHours,
     targetMinutes,
     actualElapsedMinutes: cursor - startMinutes,
     startTime: startTimeStr,
     endTime: endTimeStr,
     destinationsCount: spotCount,
     assumptions: [
-      `Exact ${input.hours}-hour duration calibrated from ${startTimeStr} to ${endTimeStr}.`,
+      `Custom tour schedule strictly calibrated for your ${startTimeStr} to ${endTimeStr} window (${effectiveHours} hours total).`,
       "Travel times use estimated road distance and local speed profiles.",
       "Entrance fees are verified municipal catalog rates; free viewpoints included to fit your budget.",
       "Operating hours reflect verified farm and roadside fruit stall schedules in Tupi.",
