@@ -66,7 +66,7 @@ export default function PlannerPage() {
   const cats = useQuery({ queryKey: ["cats"], queryFn: () => api<{ categories: { slug: string; name: string }[] }>("/api/categories") });
 
   const [hours, setHours] = useState(8);
-  const [budget, setBudget] = useState(2500);
+  const [budget, setBudget] = useState(2000);
   const [travelers, setTravelers] = useState(2);
   const [transport, setTransport] = useState<"tricycle" | "motorcycle" | "car" | "jeepney">("tricycle");
   const [intensity, setIntensity] = useState<"easy" | "moderate" | "active">("moderate");
@@ -395,7 +395,7 @@ export default function PlannerPage() {
               {plan.budget.suggestions && plan.budget.suggestions.length > 0 && (
                 <div className="mt-4 rounded-2xl bg-amber-50/80 p-4 border border-amber-200">
                   <span className="text-xs font-bold uppercase tracking-wider text-amber-900 block mb-1">
-                    Smart Cost-Saving Recommendations
+                    Smart Budget & Travel Recommendations
                   </span>
                   <ul className="list-disc pl-4 space-y-1 text-xs text-amber-950/85">
                     {plan.budget.suggestions.map((s, idx) => (
