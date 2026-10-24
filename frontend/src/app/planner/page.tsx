@@ -25,8 +25,14 @@ import { useAuth } from "@/lib/auth";
 
 type Itinerary = {
   title: string;
+  hours?: number;
+  targetMinutes?: number;
+  actualElapsedMinutes?: number;
+  startTime?: string;
+  endTime?: string;
+  destinationsCount?: number;
   assumptions: string[];
-  schedule: { time: string; title: string; kind: string; minutes: number; note: string; spot?: Spot }[];
+  schedule: { time: string; title: string; kind: "spot" | "break" | "return"; minutes: number; note: string; spot?: Spot }[];
   alternatives: Spot[];
   budget: {
     estimated: boolean;
@@ -65,8 +71,8 @@ export default function PlannerPage() {
   const { user } = useAuth();
   const cats = useQuery({ queryKey: ["cats"], queryFn: () => api<{ categories: { slug: string; name: string }[] }>("/api/categories") });
 
-  const [hours, setHours] = useState(8);
-  const [budget, setBudget] = useState(2000);
+  const [hours, setHours] = useState(5);
+  const [budget, setBudget] = useState(1000);
   const [travelers, setTravelers] = useState(2);
   const [transport, setTransport] = useState<"tricycle" | "motorcycle" | "car" | "jeepney">("tricycle");
   const [intensity, setIntensity] = useState<"easy" | "moderate" | "active">("moderate");
@@ -122,7 +128,7 @@ export default function PlannerPage() {
             AI Tupi Trip Planner
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-forest/70">
-            Tell us your time, budget, and travel style. We calculate realistic travel times between Tupi barangays, entrance fees, and fruit market stops.
+            Tell us your time, budget, and travel style. We calculate exact schedule timing, affordable entrance fees, and verified stops strictly within Tupi, South Cotabato.
           </p>
         </div>
       </div>
@@ -147,7 +153,21 @@ export default function PlannerPage() {
                   className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
                 />
               </div>
-              <span className="mt-1 block text-[11px] text-forest/60">e.g. 4 hrs (half day) or 8 hrs (full day)</span>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {[3, 4, 5, 6, 8].map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => setHours(h)}
+                    className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                      hours === h ? "bg-forest text-cream" : "bg-cream/80 text-forest/80 hover:bg-cream"
+                    }`}
+                  >
+                    {h}h {h === 5 ? "★" : ""}
+                  </button>
+                ))}
+              </div>
+              <span className="mt-1 block text-[11px] text-forest/60">Schedule calibrated to exact duration</span>
             </div>
 
             <div>
@@ -183,7 +203,21 @@ export default function PlannerPage() {
                   className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
                 />
               </div>
-              <span className="mt-1 block text-[11px] text-forest/60">Estimated gas, food & entrance</span>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {[800, 1000, 1500, 2000, 3000].map((b) => (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => setBudget(b)}
+                    className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                      budget === b ? "bg-forest text-cream" : "bg-cream/80 text-forest/80 hover:bg-cream"
+                    }`}
+                  >
+                    ₱{b.toLocaleString()}
+                  </button>
+                ))}
+              </div>
+              <span className="mt-1 block text-[11px] text-forest/60">Stops adjusted to what you afford</span>
             </div>
           </div>
 
@@ -295,12 +329,20 @@ export default function PlannerPage() {
             {/* Header of Plan */}
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-forest/10 bg-white p-6 shadow-sm">
               <div>
-                <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">
-                  Custom Route
-                </span>
-                <h2 className="mt-2 font-serif text-3xl font-bold text-forest">{plan.title}</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">
+                    Exact {plan.hours ?? hours}-Hour Tour
+                  </span>
+                  <span className="rounded-full bg-forest/10 px-3 py-1 text-xs font-semibold text-forest">
+                    {plan.startTime ?? "08:00 AM"} – {plan.endTime ?? "01:00 PM"}
+                  </span>
+                  <span className="rounded-full bg-gold/20 px-3 py-1 text-xs font-semibold text-forest">
+                    {plan.destinationsCount ?? plan.schedule.filter((b) => b.kind === "spot").length} Affordable Stops
+                  </span>
+                </div>
+                <h2 className="mt-2.5 font-serif text-3xl font-bold text-forest">{plan.title}</h2>
                 <p className="mt-1 text-xs text-forest/70">
-                  Optimized for {travelers} traveler{travelers > 1 ? "s" : ""} via {transport} · {hours} Hours
+                  Calibrated for {travelers} traveler{travelers > 1 ? "s" : ""} via {transport} · Tour Duration: exactly {plan.hours ?? hours} hours ({plan.targetMinutes ?? (hours * 60)} mins)
                 </p>
               </div>
 
@@ -317,35 +359,72 @@ export default function PlannerPage() {
 
             {/* Timeline Schedule */}
             <div className="space-y-4">
-              <h3 className="font-serif text-2xl font-bold text-forest">Tour Schedule & Stopovers</h3>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-serif text-2xl font-bold text-forest">
+                    Tour Schedule ({plan.destinationsCount ?? plan.schedule.filter((b) => b.kind === "spot").length} Affordable Destinations)
+                  </h3>
+                  <p className="text-xs text-forest/60">
+                    Strictly calibrated to your {plan.hours ?? hours}-hour window ({plan.startTime ?? "08:00 AM"} to {plan.endTime ?? "01:00 PM"}).
+                  </p>
+                </div>
+                <span className="text-xs font-bold text-forest/70 bg-cream px-3 py-1 rounded-full border border-forest/15">
+                  100% Within Tupi, South Cotabato
+                </span>
+              </div>
+
               <div className="relative pl-6 space-y-6 before:absolute before:left-3 before:top-3 before:bottom-3 before:w-0.5 before:bg-forest/20">
-                {plan.schedule.map((b, i) => (
-                  <div key={i} className="relative rounded-2xl border border-forest/10 bg-white p-5 shadow-sm">
-                    {/* Timeline dot */}
-                    <div className="absolute -left-[1.85rem] top-6 flex h-6 w-6 items-center justify-center rounded-full bg-forest text-xs font-bold text-cream">
-                      {i + 1}
-                    </div>
+                {(() => {
+                  let spotCounter = 0;
+                  return plan.schedule.map((b, i) => {
+                    const isSpot = b.kind === "spot";
+                    const isBreak = b.kind === "break";
+                    const isReturn = b.kind === "return";
+                    if (isSpot) spotCounter++;
 
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="rounded-full bg-cream px-2.5 py-0.5 text-xs font-bold text-forest">
-                        {b.time} · {b.minutes} mins
-                      </span>
-                      <span className="text-[11px] font-semibold uppercase tracking-wider text-moss">{b.kind}</span>
-                    </div>
+                    return (
+                      <div key={i} className="relative rounded-2xl border border-forest/10 bg-white p-5 shadow-sm">
+                        {/* Timeline icon / number */}
+                        <div
+                          className={`absolute -left-[1.85rem] top-6 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold shadow-sm ${
+                            isSpot
+                              ? "bg-forest text-cream ring-2 ring-forest/20"
+                              : isBreak
+                              ? "bg-amber-500 text-white ring-2 ring-amber-300"
+                              : "bg-emerald-700 text-white ring-2 ring-emerald-300"
+                          }`}
+                        >
+                          {isSpot ? spotCounter : isBreak ? "☕" : "🏁"}
+                        </div>
 
-                    <h4 className="mt-2 font-serif text-xl font-bold text-forest">{b.title}</h4>
-                    <p className="mt-1 text-xs text-forest/70 leading-relaxed">{b.note}</p>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="rounded-full bg-cream px-2.5 py-0.5 text-xs font-bold text-forest">
+                            {b.time} · {b.minutes} mins
+                          </span>
+                          <span
+                            className={`text-[11px] font-semibold uppercase tracking-wider ${
+                              isSpot ? "text-moss" : isBreak ? "text-amber-700 font-bold" : "text-emerald-700 font-bold"
+                            }`}
+                          >
+                            {isSpot ? `Destination Stop #${spotCounter}` : isBreak ? "Refreshment Break" : "Tour Conclusion"}
+                          </span>
+                        </div>
 
-                    {b.spot && (
-                      <div className="mt-3 flex items-center justify-between border-t border-forest/10 pt-2 text-xs">
-                        <span className="text-forest/60">Barangay {b.spot.barangay}</span>
-                        <Link href={`/spots/${b.spot.slug}`} target="_blank" className="font-semibold text-moss hover:underline">
-                          View Destination Details →
-                        </Link>
+                        <h4 className="mt-2 font-serif text-xl font-bold text-forest">{b.title}</h4>
+                        <p className="mt-1 text-xs text-forest/70 leading-relaxed">{b.note}</p>
+
+                        {b.spot && (
+                          <div className="mt-3 flex items-center justify-between border-t border-forest/10 pt-2 text-xs">
+                            <span className="text-forest/60">Barangay {b.spot.barangay}</span>
+                            <Link href={`/spots/${b.spot.slug}`} target="_blank" className="font-semibold text-moss hover:underline">
+                              View Destination Details →
+                            </Link>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))}
+                    );
+                  });
+                })()}
               </div>
             </div>
 
@@ -409,9 +488,9 @@ export default function PlannerPage() {
             {/* Alternative Recommended Spots in Tupi */}
             {plan.alternatives && plan.alternatives.length > 0 && (
               <div className="rounded-3xl border border-forest/10 bg-white p-6 shadow-sm">
-                <h3 className="font-serif text-xl font-bold text-forest">Alternative & Nearby Stops</h3>
+                <h3 className="font-serif text-xl font-bold text-forest">Alternative & Nearby Stops in Tupi</h3>
                 <p className="text-xs text-forest/60 mb-4">
-                  Consider these nearby spots if you have extra time or want to adjust your itinerary:
+                  Consider these nearby Tupi spots if you have extra time or want to swap a destination:
                 </p>
                 <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
                   {plan.alternatives.map((alt) => (
