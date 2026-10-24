@@ -1,6 +1,43 @@
 import { spotRating, store } from "./store.js";
 import type { TouristSpot } from "./types.js";
 
+export const TUPI_BOUNDS = {
+  minLat: 6.22,
+  maxLat: 6.48,
+  minLng: 124.85,
+  maxLng: 125.13,
+};
+
+export const TUPI_CENTER = { lat: 6.3347, lng: 124.9669 };
+
+export const TUPI_BARANGAYS = [
+  "Acmonan",
+  "Bololmala",
+  "Bunao",
+  "Cebuano",
+  "Crossing Rubber",
+  "Kablon",
+  "Kalkam",
+  "Linan",
+  "Luhong",
+  "Lunen",
+  "Miasong",
+  "Palian",
+  "Poblacion",
+  "Polonuling",
+  "Simbo",
+  "Tubo",
+];
+
+export function isWithinTupi(lat: number, lng: number): boolean {
+  return (
+    lat >= TUPI_BOUNDS.minLat &&
+    lat <= TUPI_BOUNDS.maxLat &&
+    lng >= TUPI_BOUNDS.minLng &&
+    lng <= TUPI_BOUNDS.maxLng
+  );
+}
+
 export function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;
@@ -88,6 +125,8 @@ export async function enrichSpot(spot: TouristSpot, userId?: string, origin?: { 
 }
 
 export async function enrichSpots(spots: TouristSpot[], userId?: string, origin?: { lat: number; lng: number }) {
+  // Exclusively enforce Tupi, South Cotabato territorial boundaries
+  const tupiSpots = spots.filter((s) => isWithinTupi(s.lat, s.lng));
   const cats = await store.categories();
   const catMap = new Map(cats.map((c) => [c.id, c]));
 
@@ -98,7 +137,7 @@ export async function enrichSpots(spots: TouristSpot[], userId?: string, origin?
   }
 
   return Promise.all(
-    spots.map(async (spot) => {
+    tupiSpots.map(async (spot) => {
       const rating = await spotRating(spot.id);
       return {
         ...spot,
@@ -152,15 +191,18 @@ export async function recommend(opts: {
   lng?: number;
   categoryIds?: string[];
 }) {
-  const spots = await store.spots("approved");
-  const origin = opts.lat != null && opts.lng != null ? { lat: opts.lat, lng: opts.lng } : undefined;
+  const allApproved = await store.spots("approved");
+  const spots = allApproved.filter((s) => isWithinTupi(s.lat, s.lng));
+  const origin = opts.lat != null && opts.lng != null && isWithinTupi(opts.lat, opts.lng)
+    ? { lat: opts.lat, lng: opts.lng }
+    : undefined;
   const favCats = new Set(opts.categoryIds || []);
 
   if (opts.userId) {
     const favs = await store.favoritesFor(opts.userId);
     for (const f of favs) {
       const spot = await store.getSpot(f.spotId);
-      if (spot) favCats.add(spot.categoryId);
+      if (spot && isWithinTupi(spot.lat, spot.lng)) favCats.add(spot.categoryId);
     }
     const user = await store.findUserById(opts.userId);
     if (user?.interests) {

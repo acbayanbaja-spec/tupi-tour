@@ -30,3 +30,23 @@ export const TUPI_BOUNDARY_GEOJSON = {"type":"Feature","properties":{"name":"Mun
 export function isWithinTupi(lat: number, lng: number): boolean {
   return lat >= 6.22 && lat <= 6.48 && lng >= 124.85 && lng <= 125.13;
 }
+
+export const TUPI_BARANGAYS = [
+  "Acmonan",
+  "Bololmala",
+  "Bunao",
+  "Cebuano",
+  "Crossing Rubber",
+  "Kablon",
+  "Kalkam",
+  "Linan",
+  "Luhong",
+  "Lunen",
+  "Miasong",
+  "Palian",
+  "Poblacion",
+  "Polonuling",
+  "Simbo",
+  "Tubo"
+] as const;
+export type TupiBarangay = typeof TUPI_BARANGAYS[number];

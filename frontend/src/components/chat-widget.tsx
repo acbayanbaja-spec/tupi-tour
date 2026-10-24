@@ -19,7 +19,7 @@ type Msg = { role: "user" | "assistant"; content: string; timestamp?: string };
 const SUGGESTIONS = [
   "🍓 Best fruit picking spots in Kablon",
   "⛰️ 1-Day Mount Matutum & SG Farm tour",
-  "🚗 How to commute to Tupi from Gensan / Marbel",
+  "🚗 How to explore tourist spots across Tupi barangays",
   "☕ Top coffee shops with mountain views",
 ];
 
