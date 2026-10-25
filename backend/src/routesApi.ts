@@ -106,6 +106,48 @@ api.get("/spots", optionalAuth, async (req: AuthedRequest, res) => {
   res.json({ spots: enriched });
 });
 
+// Feature 3: Nearby Tourist Spot Discovery
+// Must be registered BEFORE /spots/:id, otherwise "nearby" is captured as the :id param.
+api.get("/spots/nearby", optionalAuth, async (req: Request, res: Response) => {
+  const lat = req.query.lat ? Number(req.query.lat) : null;
+  const lng = req.query.lng ? Number(req.query.lng) : null;
+  const radiusKm = req.query.radiusKm ? Number(req.query.radiusKm) : 25;
+  const categoryId = req.query.categoryId ? String(req.query.categoryId) : undefined;
+
+  const allSpots = await store.spots("approved");
+  let filtered = allSpots;
+
+  if (categoryId && categoryId !== "all") {
+    const cats = await store.categories();
+    const matched = cats.find((c) => c.id === categoryId || c.slug === categoryId);
+    const targetCatId = matched ? matched.id : categoryId;
+    filtered = filtered.filter((s) => s.categoryId === targetCatId);
+  }
+
+  if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
+    const origin = { lat, lng };
+    const enriched = await enrichSpots(filtered, (req as AuthedRequest).user?.id, origin);
+    const nearby = enriched
+      .filter((s) => s.distanceKm != null && s.distanceKm <= radiusKm)
+      .sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0));
+
+    return res.json({
+      origin,
+      radiusKm,
+      count: nearby.length,
+      spots: nearby,
+    });
+  }
+
+  const enriched = await enrichSpots(filtered, (req as AuthedRequest).user?.id);
+  res.json({
+    origin: null,
+    radiusKm,
+    count: enriched.length,
+    spots: enriched,
+  });
+});
+
 // Single Spot Details
 api.get("/spots/:id", optionalAuth, async (req: AuthedRequest, res) => {
   const spot = await store.getSpot(req.params.id);
@@ -244,47 +286,6 @@ api.get("/routes/directions", optionalAuth, async (req: Request, res: Response) 
     adjustedMins = Math.max(6, Math.round(route.durationMinutes * 1.3));
   }
   res.json({ ...route, durationMinutes: adjustedMins, mode });
-});
-
-// Feature 3: Nearby Tourist Spot Discovery
-api.get("/spots/nearby", optionalAuth, async (req: Request, res: Response) => {
-  const lat = req.query.lat ? Number(req.query.lat) : null;
-  const lng = req.query.lng ? Number(req.query.lng) : null;
-  const radiusKm = req.query.radiusKm ? Number(req.query.radiusKm) : 25;
-  const categoryId = req.query.categoryId ? String(req.query.categoryId) : undefined;
-
-  const allSpots = await store.spots("approved");
-  let filtered = allSpots;
-
-  if (categoryId && categoryId !== "all") {
-    const cats = await store.categories();
-    const matched = cats.find((c) => c.id === categoryId || c.slug === categoryId);
-    const targetCatId = matched ? matched.id : categoryId;
-    filtered = filtered.filter((s) => s.categoryId === targetCatId);
-  }
-
-  if (lat != null && lng != null && !isNaN(lat) && !isNaN(lng)) {
-    const origin = { lat, lng };
-    const enriched = await enrichSpots(filtered, (req as AuthedRequest).user?.id, origin);
-    const nearby = enriched
-      .filter((s) => s.distanceKm != null && s.distanceKm <= radiusKm)
-      .sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0));
-
-    return res.json({
-      origin,
-      radiusKm,
-      count: nearby.length,
-      spots: nearby,
-    });
-  }
-
-  const enriched = await enrichSpots(filtered, (req as AuthedRequest).user?.id);
-  res.json({
-    origin: null,
-    radiusKm,
-    count: enriched.length,
-    spots: enriched,
-  });
 });
 
 // Multi-Stop Route Planning & Optimization (Feature 2)
