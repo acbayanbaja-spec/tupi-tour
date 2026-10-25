@@ -7,7 +7,7 @@ import { optionalAuth, requireAuth, requireRole, type AuthedRequest } from "./au
 import { chatTupi } from "./chatbot.js";
 import { config } from "./config.js";
 import { checkDbReadiness } from "./db/pool.js";
-import { enrichSpot, enrichSpots, fetchRoadRoute, haversineKm, recommend, searchSpots } from "./geo.js";
+import { enrichSpot, enrichSpots, fetchRoadRoute, haversineKm, isWithinTupi, recommend, searchSpots, TUPI_BOUNDS, TUPI_CENTER, TUPI_BARANGAYS } from "./geo.js";
 import { buildItinerary } from "./itinerary.js";
 import { spotRating, store } from "./store.js";
 import type { SavedRoute, TouristSpot, VerificationStatus } from "./types.js";
@@ -209,8 +209,8 @@ api.get("/weather", async (_req, res) => {
 
 // Feature 2: Real Road Routing Navigation via OSRM with Mountain Fallback
 api.get("/routes/directions", optionalAuth, async (req: Request, res: Response) => {
-  const fromLat = req.query.fromLat ? Number(req.query.fromLat) : 6.3347;
-  const fromLng = req.query.fromLng ? Number(req.query.fromLng) : 124.9669;
+  let fromLat = req.query.fromLat ? Number(req.query.fromLat) : TUPI_CENTER.lat;
+  let fromLng = req.query.fromLng ? Number(req.query.fromLng) : TUPI_CENTER.lng;
   let toLat = req.query.toLat ? Number(req.query.toLat) : null;
   let toLng = req.query.toLng ? Number(req.query.toLng) : null;
 
@@ -224,6 +224,14 @@ api.get("/routes/directions", optionalAuth, async (req: Request, res: Response) 
 
   if (toLat == null || toLng == null || isNaN(fromLat) || isNaN(fromLng) || isNaN(toLat) || isNaN(toLng)) {
     return res.status(400).json({ error: "Valid origin (fromLat, fromLng) and destination (toLat, toLng or spotId) are required." });
+  }
+
+  if (!isWithinTupi(toLat, toLng)) {
+    return res.status(400).json({ error: "Directions are exclusively for destinations within Tupi, South Cotabato." });
+  }
+  if (!isWithinTupi(fromLat, fromLng)) {
+    fromLat = TUPI_CENTER.lat;
+    fromLng = TUPI_CENTER.lng;
   }
 
   const route = await fetchRoadRoute({ lat: fromLat, lng: fromLng }, { lat: toLat, lng: toLng });
@@ -374,8 +382,8 @@ api.post("/routes", requireAuth, async (req: AuthedRequest, res) => {
         z.object({
           spotId: z.string(),
           name: z.string(),
-          lat: z.number(),
-          lng: z.number(),
+          lat: z.number().refine((n) => isWithinTupi(n, 124.9669), "Latitude must be within Tupi, South Cotabato"),
+      lng: z.number().refine((n) => isWithinTupi(6.3347, n), "Longitude must be within Tupi, South Cotabato"),
           order: z.number(),
         })
       ),
@@ -613,7 +621,9 @@ api.delete("/trips/:id", requireAuth, async (req: AuthedRequest, res) => {
 api.post("/itinerary", optionalAuth, async (req: AuthedRequest, res) => {
   const parsed = z
     .object({
-      hours: z.number().min(2).max(14),
+      startTime: z.string().optional(),
+      endTime: z.string().optional(),
+      hours: z.number().min(1).max(16).optional(),
       budget: z.number().min(0),
       interests: z.array(z.string()).default([]),
       travelers: z.number().int().min(1).max(12),
@@ -622,6 +632,7 @@ api.post("/itinerary", optionalAuth, async (req: AuthedRequest, res) => {
       transport: z.enum(["tricycle", "motorcycle", "car", "jeepney"]),
       intensity: z.enum(["easy", "moderate", "active"]),
       travelDate: z.string().optional(),
+      mustVisitSpotIds: z.array(z.string()).optional(),
     })
     .safeParse(req.body);
 
@@ -789,8 +800,8 @@ api.post("/owner/spots", requireAuth, requireRole("owner", "admin"), async (req:
       categoryId: z.string(),
       description: z.string().min(20),
       shortDescription: z.string().min(10),
-      lat: z.number(),
-      lng: z.number(),
+      lat: z.number().refine((n) => isWithinTupi(n, 124.9669), "Latitude must be within Tupi, South Cotabato"),
+      lng: z.number().refine((n) => isWithinTupi(6.3347, n), "Longitude must be within Tupi, South Cotabato"),
       address: z.string(),
       barangay: z.string(),
       amenities: z.array(z.string()).default([]),

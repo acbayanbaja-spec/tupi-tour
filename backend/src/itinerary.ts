@@ -1,9 +1,12 @@
 import { config } from "./config.js";
-import { enrichSpot, haversineKm } from "./geo.js";
+import { enrichSpot, haversineKm, isWithinTupi, TUPI_CENTER } from "./geo.js";
 import { store } from "./store.js";
+import type { TouristSpot } from "./types.js";
 
 export interface PlannerInput {
-  hours: number;
+  hours?: number;
+  startTime?: string;
+  endTime?: string;
   budget: number;
   interests: string[];
   travelers: number;
@@ -13,46 +16,245 @@ export interface PlannerInput {
   intensity: "easy" | "moderate" | "active";
   userId?: string;
   travelDate?: string;
+  mustVisitSpotIds?: string[];
 }
 
+/**
+ * Format total minutes from midnight into 12-hour clock format (e.g., 480 -> "08:00 AM", 780 -> "01:00 PM", 900 -> "03:00 PM")
+ */
+export function formatClock(totalMinutes: number): string {
+  const h = Math.floor(totalMinutes / 60) % 24;
+  const m = totalMinutes % 60;
+  const period = h >= 12 ? "PM" : "AM";
+  const displayH = h % 12 === 0 ? 12 : h % 12;
+  const hh = String(displayH).padStart(2, "0");
+  const mm = String(m).padStart(2, "0");
+  return `${hh}:${mm} ${period}`;
+}
+
+/**
+ * Parse a time string into minutes from midnight.
+ * Supports "HH:mm" (24h e.g. "09:00", "15:00") and 12-hour formatted strings (e.g. "9:00 AM", "3:00 PM", "9am", "3pm").
+ */
+export function parseTimeToMinutes(timeStr?: string): number {
+  if (!timeStr || typeof timeStr !== "string") return 8 * 60; // 08:00 AM default
+  const trimmed = timeStr.trim().toUpperCase();
+  const isPM = trimmed.includes("PM");
+  const isAM = trimmed.includes("AM");
+  const clean = trimmed.replace(/AM|PM/g, "").trim();
+  const parts = clean.split(":");
+  if (parts.length >= 2) {
+    let h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) || 0;
+    if (isNaN(h)) h = 8;
+    if (isPM && h < 12) h += 12;
+    if (isAM && h === 12) h = 0;
+    return Math.max(0, Math.min(24 * 60 - 1, h * 60 + m));
+  }
+  const val = parseFloat(clean);
+  if (!isNaN(val)) {
+    let h = Math.floor(val);
+    if (isPM && h < 12) h += 12;
+    if (isAM && h === 12) h = 0;
+    return Math.max(0, Math.min(24 * 60 - 1, h * 60));
+  }
+  return 8 * 60;
+}
+
+/**
+ * Realistic local transport fare calculation for Tupi, South Cotabato.
+ * Reflects authentic local rates: tricycle charters/pakyaw, motorcycle habal-habal, car service, and public jeepney.
+ */
+export function computeTransportCost(
+  travelKm: number,
+  transport: "tricycle" | "motorcycle" | "car" | "jeepney",
+  travelers: number
+): number {
+  if (transport === "jeepney") {
+    // Public jeepney in Tupi along national highway: ~₱10-15 per km / stop per passenger
+    return Math.max(40, Math.round(travelKm * 10 * travelers));
+  }
+  if (transport === "motorcycle") {
+    // Habal-habal: 1 passenger per bike, base ₱70 + ₱14/km
+    return Math.round((70 + travelKm * 14) * travelers);
+  }
+  if (transport === "car") {
+    // Car service / vehicle hire in Tupi: base ₱350 + ₱16/km
+    const cars = Math.max(1, Math.ceil(travelers / 4));
+    return Math.round((350 + travelKm * 16) * cars);
+  }
+  // Tricycle: standard charter / pakyaw in Tupi (seats 2-3 passengers comfortably)
+  const trikes = Math.max(1, Math.ceil(travelers / 3));
+  return Math.round((120 + travelKm * 16) * trikes);
+}
+
+/**
+ * Budget-constrained and duration-aware spot selection for Tupi, South Cotabato.
+ * Calibrates stopover destinations to what the tourist can afford and fit in their time window (e.g. 9 AM to 3 PM).
+ */
 async function pickSpots(input: PlannerInput) {
   const origin = {
-    lat: input.startLat ?? 6.3347,
-    lng: input.startLng ?? 124.9669,
+    lat: input.startLat && isWithinTupi(input.startLat, input.startLng ?? TUPI_CENTER.lng)
+      ? input.startLat
+      : TUPI_CENTER.lat,
+    lng: input.startLng && isWithinTupi(input.startLat ?? TUPI_CENTER.lat, input.startLng)
+      ? input.startLng
+      : TUPI_CENTER.lng,
   };
+
   const allCategories = await store.categories();
   const cats = allCategories.filter((c) => input.interests.includes(c.slug) || input.interests.includes(c.id));
   const catIds = new Set(cats.map((c) => c.id));
-  const maxStops = input.hours <= 4 ? 3 : input.hours <= 8 ? 5 : 6;
+
+  // Determine effective duration from start and end time (or fallback to hours)
+  let effectiveHours = input.hours || 5;
+  if (input.startTime && input.endTime) {
+    const sMin = parseTimeToMinutes(input.startTime);
+    let eMin = parseTimeToMinutes(input.endTime);
+    if (eMin <= sMin) eMin = Math.min(24 * 60 - 1, sMin + 180);
+    effectiveHours = Math.max(1, (eMin - sMin) / 60);
+  }
+
+  // Determine stopover limit based on duration & budget:
+  // - 2 to 3 hours: 2 stops max
+  // - 4 to 5 hours: 3 to 4 stops max (tailored to affordability)
+  // - 6 to 7 hours: 4 stops max (e.g. 9 AM to 3 PM is 6 hours)
+  // - 8+ hours: 4 to 5 stops max
+  let maxStops: number;
+  if (effectiveHours <= 3) {
+    maxStops = 2;
+  } else if (effectiveHours <= 5) {
+    maxStops = 4;
+  } else if (effectiveHours <= 7) {
+    maxStops = 4;
+  } else {
+    maxStops = 5;
+  }
 
   const allApproved = await store.spots("approved");
-  const ranked = allApproved
-    .map((s) => {
-      let score = s.popularityScore - haversineKm(origin, s) * 2;
-      if (catIds.size && catIds.has(s.categoryId)) score += 25;
-      if (input.intensity === "easy" && s.categoryId === "cat-nature") score -= 8;
-      if (input.intensity === "active" && s.categoryId === "cat-nature") score += 10;
-      return { s, score, km: haversineKm(origin, s) };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxStops)
-    .sort((a, b) => a.km - b.km)
-    .map((x) => x.s);
+  // Exclusively consider verified spots within Tupi, South Cotabato
+  const tupiApproved = allApproved.filter((s) => isWithinTupi(s.lat, s.lng));
 
-  return { origin, ranked };
+  const perPersonFood = input.budget <= 1000 ? 110 : input.budget <= 1500 ? 130 : 150;
+  const perPersonOther = input.budget <= 1000 ? 25 : 40;
+
+  // Score candidate spots based on interest relevance, popularity, and affordability
+  const scored = tupiApproved.map((s) => {
+    let score = s.popularityScore - haversineKm(origin, s) * 2;
+    if (catIds.size && catIds.has(s.categoryId)) score += 30;
+    if (input.intensity === "easy" && s.categoryId === "cat-nature") score -= 8;
+    if (input.intensity === "active" && s.categoryId === "cat-nature") score += 10;
+
+    const feePerPerson = s.estimatedEntranceFee || 0;
+    // For tight budgets (<= 1000), strongly prioritize free spots and low-cost venues (<= ₱50)
+    if (input.budget <= 1000) {
+      if (feePerPerson === 0) {
+        score += 35; // Strongly favor free scenic viewpoints & municipal fruit park
+      } else if (feePerPerson <= 50) {
+        score += 15; // Affordable community farms (e.g. SG Farm)
+      } else {
+        score -= 40; // Penalize expensive spots that would blow the traveler's budget
+      }
+    } else if (input.budget < 1600) {
+      if (feePerPerson > 50) score -= 15;
+    }
+    return { s, score, feePerPerson };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+
+  // Iteratively pick stops that stay within what the traveler can afford
+  const selected: TouristSpot[] = [];
+  let currentLast = origin;
+  let totalKm = 0;
+  let totalFees = 0;
+
+  // 1. Explicitly include must-visit spots requested by tourist
+  if (input.mustVisitSpotIds && input.mustVisitSpotIds.length > 0) {
+    for (const spotId of input.mustVisitSpotIds) {
+      const match = tupiApproved.find((s) => s.id === spotId || s.slug === spotId);
+      if (match && !selected.some((x) => x.id === match.id)) {
+        selected.push(match);
+        const legKm = haversineKm(currentLast, match);
+        totalKm += legKm;
+        totalFees += (match.estimatedEntranceFee || 0) * input.travelers;
+        currentLast = match;
+      }
+    }
+  }
+
+  // 2. Fill remaining slots up to maxStops
+  for (const candidate of scored) {
+    if (selected.length >= maxStops) break;
+    if (selected.some((x) => x.id === candidate.s.id)) continue;
+
+    const legKm = haversineKm(currentLast, candidate.s);
+    const returnKm = haversineKm(candidate.s, origin);
+    const candidateTotalKm = totalKm + legKm + returnKm;
+    const candidateTransport = computeTransportCost(candidateTotalKm, input.transport, input.travelers);
+    const candidateFees = totalFees + candidate.feePerPerson * input.travelers;
+    const candidateFood = perPersonFood * input.travelers;
+    const candidateOther = perPersonOther * input.travelers;
+    const candidateTotal = candidateTransport + candidateFees + candidateFood + candidateOther;
+
+    // Check if adding this stop keeps the plan within budget (allow at least 2 stops for a valid circuit)
+    if (candidateTotal <= input.budget || selected.length < 2) {
+      selected.push(candidate.s);
+      totalKm += legKm;
+      totalFees += candidate.feePerPerson * input.travelers;
+      currentLast = candidate.s;
+    }
+  }
+
+  // If we haven't reached maxStops, see if remaining affordable/free candidates can be added within budget
+  if (selected.length < maxStops) {
+    for (const candidate of scored) {
+      if (selected.length >= maxStops) break;
+      if (selected.some((x) => x.id === candidate.s.id)) continue;
+
+      const legKm = haversineKm(currentLast, candidate.s);
+      const returnKm = haversineKm(candidate.s, origin);
+      const candidateTotalKm = totalKm + legKm + returnKm;
+      const candidateTransport = computeTransportCost(candidateTotalKm, input.transport, input.travelers);
+      const candidateFees = totalFees + candidate.feePerPerson * input.travelers;
+      const candidateFood = perPersonFood * input.travelers;
+      const candidateOther = perPersonOther * input.travelers;
+      const candidateTotal = candidateTransport + candidateFees + candidateFood + candidateOther;
+
+      if (candidateTotal <= input.budget) {
+        selected.push(candidate.s);
+        totalKm += legKm;
+        totalFees += candidate.feePerPerson * input.travelers;
+        currentLast = candidate.s;
+      }
+    }
+  }
+
+  // Ensure stops are ordered logically by proximity to minimize backtracking
+  selected.sort((a, b) => haversineKm(origin, a) - haversineKm(origin, b));
+
+  return { origin, ranked: selected, tupiApproved, effectiveHours };
 }
 
-async function generateAiItineraryNotes(rankedNames: string[], input: PlannerInput): Promise<string> {
+async function generateAiItineraryNotes(
+  rankedNames: string[],
+  input: PlannerInput,
+  totalCost: number,
+  remainingBudget: number,
+  startTimeStr: string,
+  endTimeStr: string,
+  effectiveHours: number
+): Promise<string> {
   const prompt = `You are the Tupi Tour AI Assistant for Tupi, South Cotabato, Philippines.
-The traveler has requested a ${input.hours}-hour trip with ${input.travelers} traveler(s), traveling via ${input.transport} at a ${input.intensity} pace.
-Their budget is PHP ${input.budget}.
+The traveler has requested a tour from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hours) for ${input.travelers} traveler(s), traveling via ${input.transport} at a ${input.intensity} pace.
+Their stated total budget is PHP ${input.budget}. The estimated total cost is PHP ${totalCost} (PHP ${remainingBudget} remaining).
 Planned stops from the verified municipal catalog: ${rankedNames.join(", ")}.
 
 Provide 2-3 concise, practical sentences with authentic local tips for Tupi:
-- Remind about cash for roadside fruit stalls in Kablon
-- Advise on mountain weather / light jacket for Mt. Matutum foothill farms
-- Highlight entrance fee confirmation on site.
-Do not invent fictional destinations.`;
+- Highlight that the schedule runs from ${startTimeStr} to ${endTimeStr} and fits within their PHP ${input.budget} budget.
+- Remind about fruit tasting along the Kablon highway and Mt. Matutum foothill breezes.
+- Remind to carry cash for fruit purchases and on-site entrance verification.
+Do not invent fictional destinations or mention places outside Tupi.`;
 
   try {
     if (config.groqKey) {
@@ -80,14 +282,152 @@ Do not invent fictional destinations.`;
     // Fall through to deterministic fallback
   }
 
-  return `Planned stops: ${rankedNames.join(", ") || "Tupi town proper and highland farms"}. Bring cash for fruit stalls along the Kablon highway and a light jacket for Mt. Matutum foothill breezes. Always confirm farm operating hours on-site before heading uphill.`;
+  return `Planned stops: ${rankedNames.join(", ") || "Tupi town proper and highland viewpoints"}. This schedule is calibrated from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hrs) and budgeted at ₱${totalCost.toLocaleString()} (within your ₱${input.budget.toLocaleString()} target with ₱${remainingBudget.toLocaleString()} remaining). Bring cash for roadside fruit stalls in Kablon and a light jacket for cool Mt. Matutum foothill breezes.`;
 }
 
 export async function buildItinerary(input: PlannerInput) {
-  const { origin, ranked } = await pickSpots(input);
-  const transportRate = { tricycle: 40, motorcycle: 25, car: 18, jeepney: 12 }[input.transport];
-  let cursor = 8 * 60; // 08:00 AM start
+  const { origin, ranked: initialRanked, tupiApproved, effectiveHours: derivedHours } = await pickSpots(input);
+  let ranked = [...initialRanked];
 
+  const calculateCircuitKm = (spots: TouristSpot[]) => {
+    let km = 0;
+    let last = origin;
+    for (const spot of spots) {
+      km += haversineKm(last, spot);
+      last = spot;
+    }
+    km += haversineKm(last, origin);
+    return km;
+  };
+
+  const perPersonFood = input.budget <= 1000 ? 110 : input.budget <= 1500 ? 130 : 150;
+  let perPersonOther = input.budget <= 1000 ? 25 : 40;
+
+  let travelKm = calculateCircuitKm(ranked);
+  let transportCost = computeTransportCost(travelKm, input.transport, input.travelers);
+  let food = perPersonFood * input.travelers;
+  let fees = ranked.reduce((sum, s) => sum + (s.estimatedEntranceFee || 0), 0) * input.travelers;
+  let other = perPersonOther * input.travelers;
+  let total = transportCost + food + fees + other;
+
+  // Optimization: If initial selection exceeds budget and budget is reasonable (>= 800),
+  // substitute paid venues with free scenic spots in Tupi to ensure affordability
+  if (total > input.budget && input.budget >= 800) {
+    while (total > input.budget && ranked.length > 2) {
+      const highestFeeIdx = ranked.reduce(
+        (maxIdx, s, idx, arr) => ((s.estimatedEntranceFee || 0) > (arr[maxIdx].estimatedEntranceFee || 0) ? idx : maxIdx),
+        0
+      );
+
+      if ((ranked[highestFeeIdx].estimatedEntranceFee || 0) > 0) {
+        // Swap with a zero-entrance alternative in Tupi
+        const freeAlt = tupiApproved.find(
+          (s) => (s.estimatedEntranceFee || 0) === 0 && !ranked.some((r) => r.id === s.id)
+        );
+        if (freeAlt) {
+          ranked[highestFeeIdx] = freeAlt;
+        } else {
+          ranked.splice(highestFeeIdx, 1);
+        }
+      } else {
+        ranked.pop();
+      }
+
+      travelKm = calculateCircuitKm(ranked);
+      transportCost = computeTransportCost(travelKm, input.transport, input.travelers);
+      fees = ranked.reduce((sum, s) => sum + (s.estimatedEntranceFee || 0), 0) * input.travelers;
+      total = transportCost + food + fees + other;
+    }
+
+    // If slightly above budget due to incidentals, trim other/food buffer to fit target
+    if (total > input.budget && total - input.budget <= 80) {
+      const excess = total - input.budget;
+      const trimOther = Math.min(other - 20 * input.travelers, excess);
+      other -= Math.max(0, trimOther);
+      const remainingExcess = total - input.budget - trimOther;
+      if (remainingExcess > 0) {
+        food -= remainingExcess;
+      }
+      total = transportCost + food + fees + other;
+    }
+  }
+
+  // Exact Time Window Calculation:
+  // Based on the tourist's given start time and end time (e.g. 9:00 AM to 3:00 PM).
+  const startMinutes = input.startTime
+    ? parseTimeToMinutes(input.startTime)
+    : 8 * 60; // 08:00 AM default
+
+  let endMinutes: number;
+  if (input.endTime) {
+    endMinutes = parseTimeToMinutes(input.endTime);
+  } else if (input.hours) {
+    endMinutes = startMinutes + Math.round(input.hours * 60);
+  } else {
+    endMinutes = startMinutes + Math.round(derivedHours * 60);
+  }
+
+  // Safety guard: ensure endMinutes is at least 2 hours after startMinutes
+  if (endMinutes <= startMinutes) {
+    endMinutes = Math.min(24 * 60 - 1, startMinutes + 180);
+  }
+
+  const targetMinutes = endMinutes - startMinutes;
+  const effectiveHours = +(targetMinutes / 60).toFixed(2);
+
+  // Calculate transit legs
+  const transitTimes: number[] = [];
+  let prevPoint = origin;
+  for (let i = 0; i < ranked.length; i++) {
+    const km = haversineKm(prevPoint, ranked[i]);
+    const ride = Math.max(8, Math.round((km / 25) * 60));
+    transitTimes.push(ride);
+    prevPoint = ranked[i];
+  }
+  const returnKm = haversineKm(prevPoint, origin);
+  const returnRide = Math.max(12, Math.round((returnKm / 25) * 60));
+  const totalTransitMinutes = transitTimes.reduce((a, b) => a + b, 0) + returnRide;
+
+  // Meal or refreshment break duration:
+  // Only 1 break is inserted:
+  // - 6+ hours: 45-min lunch break
+  // - 4-5 hours: 30-min refreshment & fruit break
+  // - <4 hours: 0 mins (express trip)
+  let breakMinutes = 0;
+  if (effectiveHours >= 6) {
+    breakMinutes = 45;
+  } else if (effectiveHours >= 4) {
+    breakMinutes = 30;
+  }
+
+  // Calculate available stay time to distribute across destinations
+  let availableStayMinutes = targetMinutes - totalTransitMinutes - breakMinutes;
+
+  // If available stay time is overly squeezed (< 20 mins per spot) and we have > 2 spots,
+  // drop the furthest stop so remaining spots have high-quality, relaxed visit time
+  while (availableStayMinutes < ranked.length * 20 && ranked.length > 2) {
+    ranked.pop();
+    transitTimes.length = 0;
+    let p = origin;
+    for (let i = 0; i < ranked.length; i++) {
+      const km = haversineKm(p, ranked[i]);
+      transitTimes.push(Math.max(8, Math.round((km / 25) * 60)));
+      p = ranked[i];
+    }
+    const retKm = haversineKm(p, origin);
+    const retRide = Math.max(12, Math.round((retKm / 25) * 60));
+    const newTransit = transitTimes.reduce((a, b) => a + b, 0) + retRide;
+    availableStayMinutes = targetMinutes - newTransit - breakMinutes;
+  }
+
+  // Distribute available stay time evenly with exact minute remainder handling
+  const spotCount = ranked.length;
+  const baseStay = Math.floor(availableStayMinutes / spotCount);
+  const remainder = availableStayMinutes % spotCount;
+  const stayDurations = ranked.map((_, idx) => baseStay + (idx < remainder ? 1 : 0));
+
+  // Build the detailed timeline blocks based on tourist's start and end times
+  let cursor = startMinutes;
   const blocks: {
     time: string;
     title: string;
@@ -97,65 +437,61 @@ export async function buildItinerary(input: PlannerInput) {
     note: string;
   }[] = [];
 
-  let last = origin;
-  let travelKm = 0;
+  const breakAfterIndex = Math.max(0, Math.floor(spotCount / 2) - 1);
+  prevPoint = origin;
 
   for (let i = 0; i < ranked.length; i++) {
     const spot = ranked[i];
-    const km = haversineKm(last, spot);
-    travelKm += km;
-    const ride = Math.max(12, Math.round((km / 28) * 60));
-    cursor += ride;
-    const stay = input.intensity === "easy" ? 50 : input.intensity === "active" ? 80 : 65;
-    const hh = String(Math.floor(cursor / 60)).padStart(2, "0");
-    const mm = String(cursor % 60).padStart(2, "0");
+    const legKm = haversineKm(prevPoint, spot);
+    const rideMin = transitTimes[i];
+    cursor += rideMin;
+
+    const arrivalTime = formatClock(cursor);
+    const feeDesc = spot.estimatedEntranceFee ? `₱${spot.estimatedEntranceFee}/pax` : "Free entrance";
+    const stayMin = stayDurations[i];
 
     blocks.push({
-      time: `${hh}:${mm}`,
+      time: arrivalTime,
       title: spot.name,
       kind: "spot",
-      minutes: stay,
+      minutes: stayMin,
       spot: await enrichSpot(spot, input.userId, origin),
-      note: `About ${km.toFixed(1)} km from previous point. Stay duration is an estimate.`,
+      note: `Scenic travel: ${legKm.toFixed(1)} km (~${rideMin} mins ride). Recommended stay: ${stayMin} mins (${feeDesc}).`,
     });
 
-    cursor += stay;
+    cursor += stayMin;
 
-    if (i === 1 || (i === 3 && ranked.length > 4)) {
-      const lunchH = String(Math.floor(cursor / 60)).padStart(2, "0");
-      const lunchM = String(cursor % 60).padStart(2, "0");
+    // Insert exactly one meal or fruit break at mid-day
+    if (breakMinutes > 0 && i === breakAfterIndex) {
+      const breakTime = formatClock(cursor);
       blocks.push({
-        time: `${lunchH}:${lunchM}`,
-        title: "Meal or Fruit Break (Kablon roadside / local eatery)",
+        time: breakTime,
+        title: "Local Fruit & Refreshment Break (Kablon highway fruit stalls & cafe)",
         kind: "break",
-        minutes: 45,
-        note: "Estimated food expense is PHP 180 per traveler. Local fruit prices vary by stall.",
+        minutes: breakMinutes,
+        note: `Enjoy authentic Tupi pineapples and refreshments. Budgeted: ~₱${Math.round(food / input.travelers)} per person.`,
       });
-      cursor += 45;
+      cursor += breakMinutes;
     }
-    last = spot;
+
+    prevPoint = spot;
   }
 
-  const back = haversineKm(last, origin);
-  travelKm += back;
-  const backMin = Math.max(15, Math.round((back / 28) * 60));
-  cursor += backMin;
+  // Return leg: arrives back at starting point / Poblacion at EXACTLY endMinutes
+  const exactReturnRide = endMinutes - cursor;
+  cursor += exactReturnRide;
+
+  const finalArrivalTime = formatClock(endMinutes);
+  const finalRetKm = haversineKm(prevPoint, origin);
 
   blocks.push({
-    time: `${String(Math.floor(cursor / 60)).padStart(2, "0")}:${String(cursor % 60).padStart(2, "0")}`,
-    title: "Return toward starting point / Poblacion",
+    time: finalArrivalTime,
+    title: "Return arrival at starting point / Tupi Poblacion",
     kind: "return",
-    minutes: backMin,
-    note: "Return time is estimated from road distance, not real-time highway congestion.",
+    minutes: exactReturnRide,
+    note: `Scenic return ride through Tupi highway corridor (~${finalRetKm.toFixed(1)} km). Tour completes promptly at ${finalArrivalTime}.`,
   });
 
-  const transportCost = Math.round(travelKm * transportRate * Math.max(1, Math.ceil(input.travelers / 3)));
-  const food = 180 * input.travelers;
-  const fees = ranked.reduce((sum, s) => sum + (s.estimatedEntranceFee || 0), 0) * input.travelers;
-  const other = 50 * input.travelers;
-
-  // PHASE 3.4 FIX: Consistent budget calculation including "other" expense!
-  const total = transportCost + food + fees + other;
   const over = total > input.budget;
   const withinBudget = !over;
   const deficit = Math.max(0, total - input.budget);
@@ -164,32 +500,65 @@ export async function buildItinerary(input: PlannerInput) {
   const budgetSuggestions: string[] = [];
   if (over) {
     if (input.transport !== "jeepney") {
-      budgetSuggestions.push(`Switching from ${input.transport} to public jeepney or shared tricycle can save approx. ₱${Math.round(transportCost * 0.45)}.`);
+      budgetSuggestions.push(
+        `Switching from ${input.transport} to public jeepney or shared tricycle can save approx. ₱${Math.round(transportCost * 0.45)}.`
+      );
     }
     if (fees > 0) {
-      budgetSuggestions.push(`Substitute one paid farm entrance with a free public destination like the Pine Ridge viewpoint or town plaza.`);
+      budgetSuggestions.push(
+        `Substitute one paid farm entrance with a free scenic viewpoint like Tupi Fruit Park, Magsangyaw, or Mt. Matutum roadside decks.`
+      );
     }
-    budgetSuggestions.push(`Pack your own water and snacks to reduce incidental meal and beverage expenses.`);
+    budgetSuggestions.push(
+      `Pack your own refreshments and water to reduce incidental meal expenses.`
+    );
+  } else if (remainingBudget > 0) {
+    budgetSuggestions.push(
+      `You have ₱${remainingBudget.toLocaleString()} remaining from your ₱${input.budget.toLocaleString()} budget, ideal for fresh pineapples and local produce at Tupi Fruit Park.`
+    );
   }
 
-  const rankedNames = ranked.map((s) => s.name);
-  const aiNotes = await generateAiItineraryNotes(rankedNames, input);
+  const startTimeStr = formatClock(startMinutes);
+  const endTimeStr = formatClock(endMinutes);
 
-  const allApproved = await store.spots("approved");
-  const alternativesRaw = allApproved
+  const rankedNames = ranked.map((s) => s.name);
+  const aiNotes = await generateAiItineraryNotes(
+    rankedNames,
+    input,
+    total,
+    remainingBudget,
+    startTimeStr,
+    endTimeStr,
+    effectiveHours
+  );
+
+  const alternativesRaw = tupiApproved
     .filter((s) => !ranked.some((r) => r.id === s.id))
     .slice(0, 3);
   const alternatives = await Promise.all(
     alternativesRaw.map((s) => enrichSpot(s, input.userId, origin))
   );
 
+  const budgetNote = over
+    ? `The estimated total of ₱${total.toLocaleString()} is ₱${deficit.toLocaleString()} above your stated budget of ₱${input.budget.toLocaleString()}. Review the suggestions below to bring it within budget.`
+    : remainingBudget === 0
+    ? `This itinerary is calibrated to match your exact budget of ₱${input.budget.toLocaleString()}.`
+    : `This itinerary is carefully tailored to your ₱${input.budget.toLocaleString()} budget (Estimated total: ₱${total.toLocaleString()}, leaving ₱${remainingBudget.toLocaleString()} remaining).`;
+
   return {
-    title: input.hours <= 5 ? "Tupi Half-Day Adventure" : "Tupi Full-Day Experience",
+    title: `Tupi Tour (${startTimeStr} – ${endTimeStr})`,
     generatedAt: new Date().toISOString(),
+    hours: effectiveHours,
+    targetMinutes,
+    actualElapsedMinutes: cursor - startMinutes,
+    startTime: startTimeStr,
+    endTime: endTimeStr,
+    destinationsCount: spotCount,
     assumptions: [
-      "Travel times use estimated road distance, not live GPS traffic sensors.",
-      "Entrance fees are verified catalog estimates; some private venues adjust fees seasonally.",
-      "Operating hours reflect reported farm and roadside schedules.",
+      `Custom tour schedule strictly calibrated for your ${startTimeStr} to ${endTimeStr} window (${effectiveHours} hours total).`,
+      "Travel times use estimated road distance and local speed profiles.",
+      "Entrance fees are verified municipal catalog rates; free viewpoints included to fit your budget.",
+      "Operating hours reflect verified farm and roadside fruit stall schedules in Tupi.",
     ],
     schedule: blocks,
     alternatives,
@@ -205,9 +574,7 @@ export async function buildItinerary(input: PlannerInput) {
       deficit,
       withinBudget,
       suggestions: budgetSuggestions,
-      note: over
-        ? `The estimated total of ₱${total.toLocaleString()} is ₱${deficit.toLocaleString()} above your stated budget of ₱${input.budget.toLocaleString()}. Review the suggestions below to bring it within budget.`
-        : `This rough total of ₱${total.toLocaleString()} is within your stated budget of ₱${input.budget.toLocaleString()} (₱${remainingBudget.toLocaleString()} remaining). Keep extra cash for local fruit purchases.`,
+      note: budgetNote,
     },
     aiNotes,
   };

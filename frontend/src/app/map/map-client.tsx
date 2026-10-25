@@ -21,9 +21,25 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { MapContainer, Marker, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
+import {
+  MapContainer,
+  Marker,
+  Polygon,
+  Polyline,
+  Popup,
+  TileLayer,
+  Tooltip,
+  useMap,
+} from "react-leaflet";
 import { toast } from "sonner";
 import { api, type Spot } from "@/lib/api";
+import {
+  TUPI_BOUNDS,
+  TUPI_CENTER,
+  TUPI_POLYGON_LATLNGS,
+  TUPI_MASK_POLYGON,
+  isWithinTupi,
+} from "@/data/tupi-boundary";
 
 interface RoadRoute {
   distanceKm: number;
@@ -37,9 +53,26 @@ function FitRoute({ geometry }: { geometry?: [number, number][] }) {
   useEffect(() => {
     if (geometry && geometry.length > 1) {
       const bounds = L.latLngBounds(geometry);
-      map.fitBounds(bounds, { padding: [40, 40] });
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
     }
   }, [geometry, map]);
+  return null;
+}
+
+function TupiMapController({ resetTrigger }: { resetTrigger: number }) {
+  const map = useMap();
+
+  useEffect(() => {
+    // Initial fit bounds to ensure entire Tupi boundary fills screen snugly
+    map.fitBounds(TUPI_BOUNDS, { padding: [20, 20] });
+  }, [map]);
+
+  useEffect(() => {
+    if (resetTrigger > 0) {
+      map.fitBounds(TUPI_BOUNDS, { padding: [20, 20] });
+    }
+  }, [resetTrigger, map]);
+
   return null;
 }
 
@@ -69,6 +102,7 @@ export default function MapPage() {
   const [locMsg, setLocMsg] = useState("");
   const [search, setSearch] = useState("");
   const [selectedCat, setSelectedCat] = useState("all");
+  const [resetKey, setResetKey] = useState(0);
 
   const [route, setRoute] = useState<RoadRoute | null>(null);
   const [routingLoading, setRoutingLoading] = useState(false);
@@ -77,10 +111,8 @@ export default function MapPage() {
   const data = useQuery({ queryKey: ["map", qs], queryFn: () => api<{ spots: Spot[] }>(`/api/map${qs}`) });
   const cats = useQuery({ queryKey: ["cats"], queryFn: () => api<{ categories: { id: string; slug: string; name: string }[] }>("/api/categories") });
 
-  const center = useMemo<[number, number]>(() => [6.3347, 124.9669], []);
-
   const filteredSpots = useMemo(() => {
-    let list = data.data?.spots || [];
+    let list = (data.data?.spots || []).filter((s) => isWithinTupi(s.lat, s.lng));
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter((s) => s.name.toLowerCase().includes(q) || s.barangay.toLowerCase().includes(q));
@@ -98,9 +130,15 @@ export default function MapPage() {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setOrigin({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-        setLocMsg("Acquired current GPS coordinates. Distances are calculated accurately.");
-        toast.success("Location acquired!");
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setOrigin(coords);
+        if (isWithinTupi(coords.lat, coords.lng)) {
+          setLocMsg("Acquired current GPS coordinates in Tupi. Distances and routes are accurate.");
+          toast.success("Location acquired in Tupi!");
+        } else {
+          setLocMsg("Your location is outside Tupi, South Cotabato. Map view remains locked strictly to Tupi territory.");
+          toast.info("GPS acquired outside Tupi (map locked to Tupi).");
+        }
       },
       () => {
         setLocMsg("Location access was denied. You can still browse and tap pins to view directions.");
@@ -112,8 +150,9 @@ export default function MapPage() {
   async function calculateRoute(spot: Spot) {
     setRoutingLoading(true);
     try {
-      const fromLat = origin ? origin.lat : 6.3347;
-      const fromLng = origin ? origin.lng : 124.9669;
+      const validOrigin = origin && isWithinTupi(origin.lat, origin.lng);
+      const fromLat = validOrigin ? origin.lat : TUPI_CENTER[0];
+      const fromLng = validOrigin ? origin.lng : TUPI_CENTER[1];
       const res = await api<RoadRoute>(
         `/api/routes/directions?fromLat=${fromLat}&fromLng=${fromLng}&toLat=${spot.lat}&toLng=${spot.lng}`
       );
@@ -131,7 +170,8 @@ export default function MapPage() {
   }
 
   function launchDirections(spot: Spot) {
-    const url = origin
+    const validOrigin = origin && isWithinTupi(origin.lat, origin.lng);
+    const url = validOrigin
       ? `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${spot.lat},${spot.lng}`
       : `https://www.google.com/maps/dir/?api=1&destination=${spot.lat},${spot.lng}`;
     window.open(url, "_blank", "noopener,noreferrer");
@@ -143,17 +183,55 @@ export default function MapPage() {
     <div className="grid min-h-[calc(100vh-61px)] lg:grid-cols-[minmax(0,1fr)_420px]">
       {/* Map Container View */}
       <div className="relative h-[48vh] lg:h-auto order-1 lg:order-1">
-        <MapContainer center={center} zoom={12} className="h-full w-full" scrollWheelZoom>
+        <MapContainer
+          center={TUPI_CENTER}
+          zoom={12}
+          minZoom={12}
+          maxZoom={18}
+          maxBounds={TUPI_BOUNDS}
+          maxBoundsViscosity={1.0}
+          className="h-full w-full bg-[#f7f5ef]"
+          scrollWheelZoom
+        >
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
+          <TupiMapController resetTrigger={resetKey} />
           <Fly spot={selected} />
 
-          {origin && (
+          {/* Solid 100% Opaque Mask: Hides all areas outside Tupi, South Cotabato */}
+          <Polygon
+            positions={TUPI_MASK_POLYGON}
+            pathOptions={{
+              fillColor: "#f7f5ef", // Matches container/sidebar background so outside is completely obscured
+              fillOpacity: 1.0,
+              stroke: false,
+              fillRule: "evenodd",
+              interactive: false,
+            }}
+          />
+
+          {/* Official Tupi Municipal Boundary Line */}
+          <Polygon
+            positions={TUPI_POLYGON_LATLNGS}
+            pathOptions={{
+              color: "#166534",
+              weight: 3.5,
+              opacity: 1.0,
+              fillColor: "transparent",
+              fillOpacity: 0,
+            }}
+          >
+            <Tooltip sticky direction="top" className="font-sans text-xs font-semibold">
+              Municipality of Tupi, South Cotabato
+            </Tooltip>
+          </Polygon>
+
+          {origin && isWithinTupi(origin.lat, origin.lng) && (
             <Marker position={[origin.lat, origin.lng]} icon={userIcon}>
               <Popup>
-                <div className="text-xs font-semibold text-blue-800">Your Current Location</div>
+                <div className="text-xs font-semibold text-blue-800">Your Current Location (in Tupi)</div>
               </Popup>
             </Marker>
           )}
@@ -170,7 +248,7 @@ export default function MapPage() {
               <Popup>
                 <div className="p-1">
                   <p className="font-serif text-sm font-bold text-forest">{s.name}</p>
-                  <p className="text-[11px] text-moss">Brgy. {s.barangay}</p>
+                  <p className="text-[11px] text-moss">Brgy. {s.barangay}, Tupi</p>
                 </div>
               </Popup>
             </Marker>
@@ -187,25 +265,52 @@ export default function MapPage() {
           )}
         </MapContainer>
 
-        {/* Floating Quick Locate Button */}
-        <button
-          type="button"
-          onClick={locate}
-          className="absolute right-4 top-4 z-[400] flex items-center gap-1.5 rounded-full border border-forest/15 bg-white/95 px-4 py-2 text-xs font-semibold text-forest shadow-md hover:bg-white"
-        >
-          <Crosshair size={14} className="text-emerald-700" />
-          <span>My GPS Location</span>
-        </button>
+        {/* Floating Top-Left Territory Badge */}
+        <div className="absolute left-4 top-4 z-[400] hidden sm:flex items-center gap-2 rounded-full border border-forest/15 bg-white/95 px-3.5 py-1.5 text-xs font-semibold text-forest shadow-md backdrop-blur">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600"></span>
+          </span>
+          <span>Tupi, South Cotabato (Exclusive Map)</span>
+        </div>
+
+        {/* Floating Action Controls */}
+        <div className="absolute right-4 top-4 z-[400] flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setResetKey((k) => k + 1)}
+            className="flex items-center gap-1.5 rounded-full border border-forest/15 bg-white/95 px-3.5 py-1.5 text-xs font-semibold text-forest shadow-md hover:bg-white transition"
+            title="Reset view to entire Tupi boundary"
+          >
+            <Compass size={13} className="text-emerald-700" />
+            <span>Reset to Tupi</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={locate}
+            className="flex items-center gap-1.5 rounded-full border border-forest/15 bg-white/95 px-3.5 py-1.5 text-xs font-semibold text-forest shadow-md hover:bg-white transition"
+            title="Locate via GPS"
+          >
+            <Crosshair size={13} className="text-emerald-700" />
+            <span>My GPS</span>
+          </button>
+        </div>
       </div>
 
       {/* Sidebar Exploration Panel */}
       <aside className="order-2 lg:order-2 flex flex-col justify-between border-l border-forest/10 bg-[#f7f5ef] p-5 overflow-y-auto max-h-[calc(100vh-61px)]">
         <div className="space-y-4">
           <div>
-            <span className="text-[11px] font-bold uppercase tracking-wider text-moss">Geographic Directory</span>
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-bold text-emerald-800 uppercase tracking-wider">
+                Tupi, South Cotabato Only
+              </span>
+              <span className="text-[11px] font-bold uppercase tracking-wider text-moss">Directory</span>
+            </div>
             <h1 className="font-serif text-2xl font-bold text-forest">Explore Tupi Map</h1>
             <p className="text-xs text-forest/70">
-              Interactive map pins for accredited farms, scenic peaks, and fruit parks.
+              Exclusively bounded to the Municipality of Tupi, South Cotabato. All external areas are masked out of the system.
             </p>
           </div>
 
@@ -248,7 +353,7 @@ export default function MapPage() {
 
               <div className="flex items-center justify-between text-[10px] text-forest/70 pt-0.5">
                 <span>
-                  Origin: {origin ? "Your Current GPS" : "Tupi Municipal Hall"}
+                  Origin: {origin && isWithinTupi(origin.lat, origin.lng) ? "Your GPS in Tupi" : "Tupi Municipal Hall"}
                 </span>
                 <span className="rounded-full bg-emerald-200/70 px-2 py-0.5 font-bold text-emerald-900">
                   {route.provider.includes("OSRM") ? "OSRM Real Roads" : "Highland Model"}
@@ -263,7 +368,7 @@ export default function MapPage() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter by spot name or barangay…"
+              placeholder="Filter by spot name or barangay in Tupi…"
               className="w-full rounded-xl border border-forest/15 bg-white py-2 pl-9 pr-3 text-xs text-ink placeholder:text-forest/40"
             />
           </div>
@@ -315,7 +420,7 @@ export default function MapPage() {
                   </span>
                 </div>
                 <p className="text-[11px] text-moss flex items-center gap-1 mt-0.5">
-                  <MapPin size={12} /> Brgy. {selected.barangay}
+                  <MapPin size={12} /> Brgy. {selected.barangay}, Tupi
                   {selected.distanceKm != null && ` · ${selected.distanceKm} km away`}
                 </p>
                 <p className="mt-1.5 text-xs text-forest/70 line-clamp-2">{selected.shortDescription}</p>
@@ -358,7 +463,7 @@ export default function MapPage() {
           {/* List of matching spots */}
           <div className="space-y-2">
             <span className="text-[11px] font-bold uppercase tracking-wider text-forest/60">
-              Matching Destinations ({filteredSpots.length})
+              Destinations in Tupi ({filteredSpots.length})
             </span>
             <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1 scrollbar-thin">
               {filteredSpots.map((s) => (
@@ -385,8 +490,9 @@ export default function MapPage() {
           </div>
         </div>
 
-        <div className="mt-4 border-t border-forest/10 pt-3 text-center text-[11px] text-forest/50">
-          OpenStreetMap & GPS Navigation fallback enabled
+        <div className="mt-4 border-t border-forest/10 pt-3 text-center text-[11px] text-forest/60">
+          <p className="font-semibold text-forest/80">Municipality of Tupi · South Cotabato (9505)</p>
+          <p className="text-[10px] text-forest/50">Exclusive municipal system: all external locations excluded</p>
         </div>
       </aside>
     </div>

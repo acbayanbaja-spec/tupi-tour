@@ -8,12 +8,13 @@ import { toast } from "sonner";
 import { Stagger } from "@/components/motion";
 import { SpotCard, SpotSkeleton } from "@/components/spot-card";
 import { api, type Spot } from "@/lib/api";
+import { isWithinTupi } from "@/data/tupi-boundary";
 
 const RADIUS_OPTIONS = [
   { label: "5 km", value: 5 },
   { label: "10 km", value: 10 },
   { label: "20 km", value: 20 },
-  { label: "35 km (All Tupi)", value: 35 },
+  { label: "20 km (All Tupi)", value: 20 },
 ];
 
 function ExploreInner() {
@@ -93,9 +94,10 @@ function ExploreInner() {
 
   // Filter spots by search query if user types in search box during nearby mode
   const displayedSpots = useMemo(() => {
-    if (!q.trim()) return rawSpots;
+    const tupiOnly = rawSpots.filter((s) => isWithinTupi(s.lat, s.lng));
+    if (!q.trim()) return tupiOnly;
     const term = q.toLowerCase();
-    return rawSpots.filter(
+    return tupiOnly.filter(
       (s) =>
         s.name.toLowerCase().includes(term) ||
         s.barangay.toLowerCase().includes(term) ||
