@@ -8,13 +8,13 @@ import { toast } from "sonner";
 import { Stagger } from "@/components/motion";
 import { SpotCard, SpotSkeleton } from "@/components/spot-card";
 import { api, type Spot } from "@/lib/api";
-import { isWithinTupi } from "@/data/tupi-boundary";
+import { isWithinTupi, TUPI_CENTER } from "@/data/tupi-boundary";
 
 const RADIUS_OPTIONS = [
   { label: "5 km", value: 5 },
   { label: "10 km", value: 10 },
   { label: "20 km", value: 20 },
-  { label: "20 km (All Tupi)", value: 20 },
+  { label: "All of Tupi", value: 100 },
 ];
 
 function ExploreInner() {
@@ -78,9 +78,10 @@ function ExploreInner() {
       },
       (err) => {
         setLocating(false);
-        toast.error("Location access denied or unavailable.");
+        setGpsOrigin({ lat: TUPI_CENTER[0], lng: TUPI_CENTER[1] });
+        toast.warning("Couldn't read your GPS. Showing destinations near Tupi center instead.");
       },
-      { timeout: 10000 }
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
   }
 
