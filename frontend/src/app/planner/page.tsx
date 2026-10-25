@@ -6,18 +6,22 @@ import {
   Bookmark,
   Calendar,
   Car,
+  Check,
   Clock,
   Coins,
   Compass,
+  ExternalLink,
   Footprints,
   MapPin,
+  Plus,
   Route,
   Share2,
   Sparkles,
+  Trash2,
   Users,
 } from "lucide-react";
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { FadeIn } from "@/components/motion";
 import { api, type Spot } from "@/lib/api";
@@ -74,6 +78,13 @@ function parseMinutes(t: string): number {
   return h * 60 + m;
 }
 
+function minutesToTimeString(minutes: number): string {
+  const total = Math.max(0, Math.min(24 * 60 - 1, minutes));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
 function formatTimeBadge(t: string): string {
   const parts = t.split(":");
   let h = parseInt(parts[0], 10) || 0;
@@ -84,23 +95,27 @@ function formatTimeBadge(t: string): string {
 }
 
 const COMMON_TIME_PRESETS = [
-  { label: "9:00 AM – 3:00 PM (6 hrs)", start: "09:00", end: "15:00" },
-  { label: "8:00 AM – 1:00 PM (5 hrs)", start: "08:00", end: "13:00" },
-  { label: "8:00 AM – 12:00 PM (4 hrs)", start: "08:00", end: "12:00" },
-  { label: "8:00 AM – 4:00 PM (8 hrs)", start: "08:00", end: "16:00" },
+  { label: "9:00 AM – 3:00 PM (6 hrs)", start: "09:00", end: "15:00", hours: 6 },
+  { label: "8:00 AM – 1:00 PM (5 hrs)", start: "08:00", end: "13:00", hours: 5 },
+  { label: "8:00 AM – 12:00 PM (4 hrs)", start: "08:00", end: "12:00", hours: 4 },
+  { label: "8:00 AM – 4:00 PM (8 hrs)", start: "08:00", end: "16:00", hours: 8 },
 ];
 
 export default function PlannerPage() {
   const { user } = useAuth();
   const cats = useQuery({ queryKey: ["cats"], queryFn: () => api<{ categories: { slug: string; name: string }[] }>("/api/categories") });
+  const allSpotsQuery = useQuery({ queryKey: ["spots-for-planner"], queryFn: () => api<{ spots: Spot[] }>("/api/spots") });
 
   const [startTime, setStartTime] = useState("09:00");
   const [endTime, setEndTime] = useState("15:00");
+  const [customHours, setCustomHours] = useState(6);
   const [budget, setBudget] = useState(1000);
   const [travelers, setTravelers] = useState(2);
   const [transport, setTransport] = useState<"tricycle" | "motorcycle" | "car" | "jeepney">("tricycle");
   const [intensity, setIntensity] = useState<"easy" | "moderate" | "active">("moderate");
   const [interests, setInterests] = useState<string[]>(["agri-tourism", "nature"]);
+  const [mustVisitSpotIds, setMustVisitSpotIds] = useState<string[]>([]);
+  const [selectedSpotToAdd, setSelectedSpotToAdd] = useState("");
   const [plan, setPlan] = useState<Itinerary | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -109,12 +124,42 @@ export default function PlannerPage() {
   const durationMinutes = endMin > startMin ? endMin - startMin : 0;
   const durationHours = +(durationMinutes / 60).toFixed(1);
 
+  const approvedSpots = allSpotsQuery.data?.spots || [];
+
+  function handleDurationChange(newHours: number) {
+    const valid = Math.max(1, Math.min(14, newHours));
+    setCustomHours(valid);
+    const newEndMin = Math.min(23 * 60 + 59, startMin + Math.round(valid * 60));
+    setEndTime(minutesToTimeString(newEndMin));
+  }
+
+  function handleStartTimeChange(newStart: string) {
+    setStartTime(newStart);
+    const sMin = parseMinutes(newStart);
+    const newEndMin = Math.min(23 * 60 + 59, sMin + Math.round(customHours * 60));
+    setEndTime(minutesToTimeString(newEndMin));
+  }
+
+  function handleEndTimeChange(newEnd: string) {
+    setEndTime(newEnd);
+    const eMin = parseMinutes(newEnd);
+    if (eMin > startMin) {
+      const diffH = +((eMin - startMin) / 60).toFixed(1);
+      setCustomHours(diffH);
+    }
+  }
+
   function toggleInterest(slug: string) {
     setInterests((c) => (c.includes(slug) ? c.filter((x) => x !== slug) : [...c, slug]));
   }
 
-  async function onSubmit(e: FormEvent) {
-    e.preventDefault();
+  function toggleMustVisit(id: string) {
+    setMustVisitSpotIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  async function fetchItineraryWithStops(overrideSpotIds?: string[]) {
     if (endMin <= startMin) {
       toast.error("End time must be later than start time.");
       return;
@@ -126,17 +171,19 @@ export default function PlannerPage() {
 
     setBusy(true);
     try {
+      const activeMustVisits = overrideSpotIds ?? mustVisitSpotIds;
       const data = await api<{ itinerary: Itinerary }>("/api/itinerary", {
         method: "POST",
         body: JSON.stringify({
           startTime,
           endTime,
-          hours: durationHours,
+          hours: customHours,
           budget,
           travelers,
           transport,
           intensity,
           interests,
+          mustVisitSpotIds: activeMustVisits,
         }),
       });
       setPlan(data.itinerary);
@@ -146,6 +193,31 @@ export default function PlannerPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    await fetchItineraryWithStops();
+  }
+
+  // Allow tourist to dynamically add an alternative stop into their live route
+  async function addStopToRoute(spotId: string) {
+    if (mustVisitSpotIds.includes(spotId)) {
+      toast.info("Destination is already in your route.");
+      return;
+    }
+    const updated = [...mustVisitSpotIds, spotId];
+    setMustVisitSpotIds(updated);
+    toast.info("Adding destination to route and recalibrating schedule…");
+    await fetchItineraryWithStops(updated);
+  }
+
+  // Allow tourist to remove a stop from their live route
+  async function removeStopFromRoute(spotId: string) {
+    const updated = mustVisitSpotIds.filter((id) => id !== spotId);
+    setMustVisitSpotIds(updated);
+    toast.info("Removing stop and recalculating schedule…");
+    await fetchItineraryWithStops(updated);
   }
 
   async function saveTrip() {
@@ -175,7 +247,7 @@ export default function PlannerPage() {
             AI Tupi Trip Planner
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-forest/70">
-            Choose your start and end time (e.g. 9:00 AM to 3:00 PM) and budget. Your tour schedule and affordable stopovers are calibrated strictly to fit your exact hours.
+            Set your exact time duration, customize your departure and return, pick must-visit spots, and add more routes as you like. Every itinerary is calibrated strictly to what you afford and fit in time.
           </p>
         </div>
       </div>
@@ -183,12 +255,19 @@ export default function PlannerPage() {
       <main className="mx-auto max-w-5xl px-4 pt-8 sm:px-6">
         {/* Form Container */}
         <form onSubmit={onSubmit} className="rounded-3xl border border-forest/10 bg-white p-6 sm:p-8 shadow-sm space-y-6">
-          {/* Quick Schedule Presets */}
+          {/* Section 1: Duration & Timing */}
           <div>
-            <span className="block text-xs font-semibold uppercase tracking-wider text-forest/80 mb-2">
-              Popular Tour Time Windows
-            </span>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider text-forest/80">
+                1. Set Your Time Duration & Schedule
+              </span>
+              <span className="text-[11px] font-semibold text-moss">
+                Calibrated to what you want (2h to 14h)
+              </span>
+            </div>
+
+            {/* Quick Presets */}
+            <div className="flex flex-wrap gap-2 mb-4">
               {COMMON_TIME_PRESETS.map((preset) => {
                 const active = startTime === preset.start && endTime === preset.end;
                 return (
@@ -198,6 +277,7 @@ export default function PlannerPage() {
                     onClick={() => {
                       setStartTime(preset.start);
                       setEndTime(preset.end);
+                      setCustomHours(preset.hours);
                     }}
                     className={`rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
                       active
@@ -210,71 +290,116 @@ export default function PlannerPage() {
                 );
               })}
             </div>
+
+            {/* Time Controls: Duration Slider/Number, Start Time, End Time */}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 rounded-2xl bg-cream/30 p-4 border border-forest/10">
+              {/* Duration in Hours (Custom Duration Tourist Wants) */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
+                  Total Duration (Hours)
+                </label>
+                <div className="relative mt-1.5">
+                  <Clock className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
+                  <input
+                    type="number"
+                    min={2}
+                    max={14}
+                    step={0.5}
+                    value={customHours}
+                    onChange={(e) => handleDurationChange(Number(e.target.value))}
+                    className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
+                  />
+                </div>
+                <div className="mt-1.5 flex gap-1">
+                  {[3, 4, 5, 6, 8].map((h) => (
+                    <button
+                      key={h}
+                      type="button"
+                      onClick={() => handleDurationChange(h)}
+                      className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
+                        customHours === h ? "bg-forest text-cream" : "bg-white text-forest/70 border border-forest/10 hover:bg-cream"
+                      }`}
+                    >
+                      {h}h
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Start Time */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
+                  Departure Time
+                </label>
+                <div className="relative mt-1.5">
+                  <Clock className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
+                  <input
+                    type="time"
+                    value={startTime}
+                    onChange={(e) => handleStartTimeChange(e.target.value)}
+                    className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
+                  />
+                </div>
+                <span className="mt-1 block text-[11px] text-forest/60">
+                  Starts at <strong className="text-forest">{formatTimeBadge(startTime)}</strong>
+                </span>
+              </div>
+
+              {/* End Time */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
+                  Return Time
+                </label>
+                <div className="relative mt-1.5">
+                  <Clock className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
+                  <input
+                    type="time"
+                    value={endTime}
+                    onChange={(e) => handleEndTimeChange(e.target.value)}
+                    className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
+                  />
+                </div>
+                <span className="mt-1 block text-[11px] text-forest/60">
+                  Returns by <strong className="text-forest">{formatTimeBadge(endTime)}</strong>
+                </span>
+              </div>
+
+              {/* Group Size */}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
+                  Travelers
+                </label>
+                <div className="relative mt-1.5">
+                  <Users className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
+                  <input
+                    type="number"
+                    min={1}
+                    max={12}
+                    value={travelers}
+                    onChange={(e) => setTravelers(Number(e.target.value))}
+                    className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
+                  />
+                </div>
+                <span className="mt-1 block text-[11px] text-forest/60">Number of people</span>
+              </div>
+            </div>
+
+            {/* Live Timing Status Banner */}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-cream/70 px-4 py-2 text-xs text-forest">
+              <span>
+                Schedule Window: <strong className="font-semibold">{formatTimeBadge(startTime)} – {formatTimeBadge(endTime)}</strong>
+              </span>
+              <span className="rounded-full bg-forest px-2.5 py-0.5 font-bold text-cream">
+                {customHours} Hours Duration
+              </span>
+            </div>
           </div>
 
-          {/* Row 1: Start Time, End Time, Group Size, Budget */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {/* Start Time */}
+          {/* Section 2: Budget & Transport */}
+          <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
-                Start Time
-              </label>
-              <div className="relative mt-1.5">
-                <Clock className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
-                <input
-                  type="time"
-                  value={startTime}
-                  onChange={(e) => setStartTime(e.target.value)}
-                  className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
-                />
-              </div>
-              <span className="mt-1 block text-[11px] text-forest/60">
-                Departure: <strong className="text-forest">{formatTimeBadge(startTime)}</strong>
-              </span>
-            </div>
-
-            {/* End Time */}
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
-                End Time
-              </label>
-              <div className="relative mt-1.5">
-                <Clock className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
-                <input
-                  type="time"
-                  value={endTime}
-                  onChange={(e) => setEndTime(e.target.value)}
-                  className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
-                />
-              </div>
-              <span className="mt-1 block text-[11px] text-forest/60">
-                Return by: <strong className="text-forest">{formatTimeBadge(endTime)}</strong>
-              </span>
-            </div>
-
-            {/* Group Size */}
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
-                Group Size
-              </label>
-              <div className="relative mt-1.5">
-                <Users className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
-                <input
-                  type="number"
-                  min={1}
-                  max={12}
-                  value={travelers}
-                  onChange={(e) => setTravelers(Number(e.target.value))}
-                  className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
-                />
-              </div>
-              <span className="mt-1 block text-[11px] text-forest/60">Number of travelers</span>
-            </div>
-
-            {/* Total Budget */}
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
-                Total Budget (₱)
+                2. Total Budget (₱)
               </label>
               <div className="relative mt-1.5">
                 <Coins className="pointer-events-none absolute left-3.5 top-3.5 text-forest/40" size={16} />
@@ -287,101 +412,112 @@ export default function PlannerPage() {
                   className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
                 />
               </div>
-              <span className="mt-1 block text-[11px] text-forest/60">Stops fitted to what you afford</span>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {[800, 1000, 1500, 2000, 3000].map((b) => (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => setBudget(b)}
+                    className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                      budget === b ? "bg-forest text-cream" : "bg-cream/80 text-forest/80 hover:bg-cream"
+                    }`}
+                  >
+                    ₱{b.toLocaleString()}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Mode of Transport */}
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80 mb-1.5">
+                Mode of Transport
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {TRANSPORT_OPTIONS.map((t) => {
+                  const Icon = t.icon;
+                  const active = transport === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setTransport(t.id as typeof transport)}
+                      className={`flex items-center gap-2 rounded-xl border p-2 text-left transition ${
+                        active
+                          ? "border-forest bg-forest text-cream ring-1 ring-forest/20"
+                          : "border-forest/15 bg-white text-forest hover:bg-cream/50"
+                      }`}
+                    >
+                      <Icon size={16} className={active ? "text-gold" : "text-moss"} />
+                      <span className="text-xs font-bold">{t.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
-          {/* Time window status pill */}
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-cream/70 px-4 py-2.5 text-xs text-forest">
-            <span>
-              Tour Window: <strong className="font-semibold">{formatTimeBadge(startTime)} to {formatTimeBadge(endTime)}</strong>
-            </span>
-            <span className="rounded-full bg-forest px-2.5 py-0.5 font-bold text-cream">
-              {durationHours > 0 ? `${durationHours} Hours Total` : "Invalid time range"}
-            </span>
-          </div>
-
-          {/* Row 2: Mode of Transport */}
+          {/* Section 3: Add More Routes / Select Must-Visit Stops */}
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80 mb-2">
-              Preferred Mode of Transport
-            </label>
-            <div className="grid gap-2.5 sm:grid-cols-4">
-              {TRANSPORT_OPTIONS.map((t) => {
-                const Icon = t.icon;
-                const active = transport === t.id;
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
+                3. Add Specific Routes & Must-Visit Stops (Optional)
+              </label>
+              <span className="text-[11px] text-forest/60">
+                {mustVisitSpotIds.length} place{mustVisitSpotIds.length !== 1 ? "s" : ""} selected to include
+              </span>
+            </div>
+            <p className="text-xs text-forest/70 mb-2.5">
+              Choose specific Tupi attractions you want on your route. The planner will prioritize these and fit the rest to your time and budget.
+            </p>
+            <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto p-2 bg-cream/30 rounded-2xl border border-forest/10">
+              {approvedSpots.map((spot) => {
+                const isSelected = mustVisitSpotIds.includes(spot.id);
                 return (
                   <button
-                    key={t.id}
+                    key={spot.id}
                     type="button"
-                    onClick={() => setTransport(t.id as typeof transport)}
-                    className={`flex flex-col items-start rounded-2xl border p-3.5 text-left transition ${
-                      active
-                        ? "border-forest bg-forest text-cream ring-2 ring-forest/20"
-                        : "border-forest/15 bg-white text-forest hover:bg-cream/50"
+                    onClick={() => toggleMustVisit(spot.id)}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                      isSelected
+                        ? "bg-forest text-cream ring-2 ring-forest/30"
+                        : "bg-white border border-forest/15 text-forest hover:bg-cream"
                     }`}
                   >
-                    <Icon size={18} className={active ? "text-gold" : "text-moss"} />
-                    <span className="mt-2 text-xs font-bold">{t.label}</span>
-                    <span className={`text-[10px] mt-0.5 ${active ? "text-cream/80" : "text-forest/60"}`}>{t.desc}</span>
+                    {isSelected ? <Check size={12} className="text-gold" /> : <Plus size={12} className="text-forest/50" />}
+                    <span>{spot.name}</span>
+                    <span className="text-[10px] opacity-75">
+                      ({spot.estimatedEntranceFee ? `₱${spot.estimatedEntranceFee}` : "Free"})
+                    </span>
                   </button>
                 );
               })}
             </div>
           </div>
 
-          {/* Row 3: Pace */}
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80 mb-2">
-              Tour Pace
-            </label>
-            <div className="grid gap-2.5 sm:grid-cols-3">
-              {INTENSITY_OPTIONS.map((p) => {
-                const Icon = p.icon;
-                const active = intensity === p.id;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setIntensity(p.id as typeof intensity)}
-                    className={`flex items-center gap-3 rounded-2xl border p-3 text-left transition ${
-                      active
-                        ? "border-forest bg-forest text-cream ring-2 ring-forest/20"
-                        : "border-forest/15 bg-white text-forest hover:bg-cream/50"
-                    }`}
-                  >
-                    <Icon size={18} className={active ? "text-gold" : "text-moss"} />
-                    <div>
-                      <span className="block text-xs font-bold">{p.label}</span>
-                      <span className={`text-[10px] ${active ? "text-cream/80" : "text-forest/60"}`}>{p.desc}</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Row 4: Interests */}
-          <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80 mb-2">
-              What Interests You Most?
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {cats.data?.categories.map((c) => {
-                const selected = interests.includes(c.slug);
-                return (
-                  <button
-                    key={c.slug}
-                    type="button"
-                    onClick={() => toggleInterest(c.slug)}
-                    className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
-                      selected ? "bg-forest text-cream" : "border border-forest/15 bg-white text-forest hover:bg-cream"
-                    }`}
-                  >
-                    {c.name}
-                  </button>
-                );
-              })}
+          {/* Section 4: Tour Pace & Interests */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80 mb-2">
+                4. What Interests You Most?
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {cats.data?.categories.map((c) => {
+                  const selected = interests.includes(c.slug);
+                  return (
+                    <button
+                      key={c.slug}
+                      type="button"
+                      onClick={() => toggleInterest(c.slug)}
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition ${
+                        selected ? "bg-forest text-cream" : "border border-forest/15 bg-white text-forest hover:bg-cream"
+                      }`}
+                    >
+                      {c.name}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
@@ -426,7 +562,19 @@ export default function PlannerPage() {
                 </p>
               </div>
 
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
+                <Link
+                  href="/map"
+                  className="flex items-center gap-1.5 rounded-full border border-forest/20 bg-cream/70 px-4 py-2.5 text-xs font-semibold text-forest hover:bg-cream"
+                >
+                  <MapPin size={14} className="text-emerald-700" /> View on Map
+                </Link>
+                <Link
+                  href="/routes"
+                  className="flex items-center gap-1.5 rounded-full border border-forest/20 bg-cream/70 px-4 py-2.5 text-xs font-semibold text-forest hover:bg-cream"
+                >
+                  <Route size={14} className="text-forest" /> Multi-Stop Route
+                </Link>
                 <button
                   type="button"
                   onClick={saveTrip}
@@ -445,7 +593,7 @@ export default function PlannerPage() {
                     Tour Schedule ({plan.destinationsCount ?? plan.schedule.filter((b) => b.kind === "spot").length} Affordable Stopovers)
                   </h3>
                   <p className="text-xs text-forest/60">
-                    Based on your given window: departure at <strong>{plan.startTime}</strong> and return at <strong>{plan.endTime}</strong>.
+                    Strictly calibrated to your window: departure at <strong>{plan.startTime}</strong> and return at <strong>{plan.endTime}</strong>.
                   </p>
                 </div>
                 <span className="text-xs font-bold text-forest/70 bg-cream px-3 py-1 rounded-full border border-forest/15">
@@ -496,9 +644,19 @@ export default function PlannerPage() {
                         {b.spot && (
                           <div className="mt-3 flex items-center justify-between border-t border-forest/10 pt-2 text-xs">
                             <span className="text-forest/60">Barangay {b.spot.barangay}</span>
-                            <Link href={`/spots/${b.spot.slug}`} target="_blank" className="font-semibold text-moss hover:underline">
-                              View Destination Details →
-                            </Link>
+                            <div className="flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => removeStopFromRoute(b.spot!.id)}
+                                className="inline-flex items-center gap-1 text-amber-800 hover:text-red-700 transition"
+                                title="Remove this stop from itinerary"
+                              >
+                                <Trash2 size={12} /> Remove
+                              </button>
+                              <Link href={`/spots/${b.spot.slug}`} target="_blank" className="font-semibold text-moss hover:underline">
+                                View Details →
+                              </Link>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -506,6 +664,97 @@ export default function PlannerPage() {
                   });
                 })()}
               </div>
+            </div>
+
+            {/* Add More Routes Section (Dynamic In-Itinerary Expansion) */}
+            <div className="rounded-3xl border border-forest/10 bg-white p-6 shadow-sm space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="font-serif text-xl font-bold text-forest flex items-center gap-2">
+                    <Plus size={18} className="text-moss" /> Add More Stops to Your Itinerary
+                  </h3>
+                  <p className="text-xs text-forest/60">
+                    Want to explore more? Add another destination and we’ll rebalance your stay times and route within your budget.
+                  </p>
+                </div>
+              </div>
+
+              {/* Destination selector */}
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  value={selectedSpotToAdd}
+                  onChange={(e) => setSelectedSpotToAdd(e.target.value)}
+                  className="rounded-xl border border-forest/15 bg-white px-3.5 py-2 text-xs font-semibold text-forest flex-1 max-w-sm"
+                >
+                  <option value="">-- Choose a Tupi destination to add --</option>
+                  {approvedSpots
+                    .filter((s) => !mustVisitSpotIds.includes(s.id))
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} (Brgy. {s.barangay} · {s.estimatedEntranceFee ? `₱${s.estimatedEntranceFee}` : "Free"})
+                      </option>
+                    ))}
+                </select>
+
+                <button
+                  type="button"
+                  disabled={!selectedSpotToAdd || busy}
+                  onClick={() => {
+                    if (selectedSpotToAdd) {
+                      addStopToRoute(selectedSpotToAdd);
+                      setSelectedSpotToAdd("");
+                    }
+                  }}
+                  className="rounded-full bg-forest px-4 py-2 text-xs font-bold text-cream hover:bg-forest-800 disabled:opacity-50 transition"
+                >
+                  + Add to Route Now
+                </button>
+              </div>
+
+              {/* Alternative Nearby Stops with 1-Click "Add to Route" */}
+              {plan.alternatives && plan.alternatives.length > 0 && (
+                <div className="pt-2">
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-forest/80 mb-2">
+                    Suggested Alternatives & Nearby Stops in Tupi
+                  </span>
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+                    {plan.alternatives.map((alt) => (
+                      <div
+                        key={alt.id}
+                        className="rounded-2xl border border-forest/10 bg-cream/40 p-3.5 flex flex-col justify-between"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] uppercase font-bold text-moss">Brgy. {alt.barangay}</span>
+                            <span className="text-[10px] font-semibold text-forest/70">
+                              {alt.estimatedEntranceFee ? `₱${alt.estimatedEntranceFee}` : "Free"}
+                            </span>
+                          </div>
+                          <h4 className="font-serif text-sm font-bold text-forest mt-1">{alt.name}</h4>
+                          <p className="text-[11px] text-forest/70 line-clamp-2 mt-1">{alt.shortDescription}</p>
+                        </div>
+
+                        <div className="mt-3 flex items-center justify-between border-t border-forest/10 pt-2">
+                          <Link
+                            href={`/spots/${alt.slug}`}
+                            target="_blank"
+                            className="text-[11px] font-semibold text-moss hover:underline"
+                          >
+                            Details →
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => addStopToRoute(alt.id)}
+                            className="inline-flex items-center gap-1 rounded-full bg-forest px-2.5 py-1 text-[11px] font-bold text-cream hover:bg-forest-800 transition"
+                          >
+                            <Plus size={12} /> Add to Route
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Estimated Budget Cards */}
@@ -564,35 +813,6 @@ export default function PlannerPage() {
                 </div>
               )}
             </div>
-
-            {/* Alternative Recommended Spots in Tupi */}
-            {plan.alternatives && plan.alternatives.length > 0 && (
-              <div className="rounded-3xl border border-forest/10 bg-white p-6 shadow-sm">
-                <h3 className="font-serif text-xl font-bold text-forest">Alternative & Nearby Stops in Tupi</h3>
-                <p className="text-xs text-forest/60 mb-4">
-                  Consider these nearby Tupi spots if you have extra time or want to swap a destination:
-                </p>
-                <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
-                  {plan.alternatives.map((alt) => (
-                    <Link
-                      key={alt.id}
-                      href={`/spots/${alt.slug}`}
-                      target="_blank"
-                      className="group rounded-2xl border border-forest/10 bg-cream/40 p-3 hover:bg-cream transition flex flex-col justify-between"
-                    >
-                      <div>
-                        <span className="text-[10px] uppercase font-bold text-moss">Brgy. {alt.barangay}</span>
-                        <h4 className="font-serif text-sm font-bold text-forest group-hover:text-emerald-800 transition">
-                          {alt.name}
-                        </h4>
-                        <p className="text-[11px] text-forest/70 line-clamp-2 mt-1">{alt.shortDescription}</p>
-                      </div>
-                      <span className="mt-2 text-[10px] font-semibold text-emerald-700">Explore destination →</span>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* AI Guide Notes */}
             <div className="rounded-3xl border border-gold/30 bg-amber-50/60 p-6">

@@ -16,6 +16,7 @@ export interface PlannerInput {
   intensity: "easy" | "moderate" | "active";
   userId?: string;
   travelDate?: string;
+  mustVisitSpotIds?: string[];
 }
 
 /**
@@ -168,6 +169,21 @@ async function pickSpots(input: PlannerInput) {
   let totalKm = 0;
   let totalFees = 0;
 
+  // 1. Explicitly include must-visit spots requested by tourist
+  if (input.mustVisitSpotIds && input.mustVisitSpotIds.length > 0) {
+    for (const spotId of input.mustVisitSpotIds) {
+      const match = tupiApproved.find((s) => s.id === spotId || s.slug === spotId);
+      if (match && !selected.some((x) => x.id === match.id)) {
+        selected.push(match);
+        const legKm = haversineKm(currentLast, match);
+        totalKm += legKm;
+        totalFees += (match.estimatedEntranceFee || 0) * input.travelers;
+        currentLast = match;
+      }
+    }
+  }
+
+  // 2. Fill remaining slots up to maxStops
   for (const candidate of scored) {
     if (selected.length >= maxStops) break;
     if (selected.some((x) => x.id === candidate.s.id)) continue;

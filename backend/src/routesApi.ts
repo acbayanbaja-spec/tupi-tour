@@ -632,6 +632,7 @@ api.post("/itinerary", optionalAuth, async (req: AuthedRequest, res) => {
       transport: z.enum(["tricycle", "motorcycle", "car", "jeepney"]),
       intensity: z.enum(["easy", "moderate", "active"]),
       travelDate: z.string().optional(),
+      mustVisitSpotIds: z.array(z.string()).optional(),
     })
     .safeParse(req.body);
 
