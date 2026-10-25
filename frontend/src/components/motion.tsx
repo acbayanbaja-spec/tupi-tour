@@ -25,8 +25,7 @@ export function Stagger({ children, className }: { children: ReactNode; classNam
     <motion.div
       className={className}
       initial={reduce ? false : "hidden"}
-      whileInView="show"
-      viewport={{ once: true, margin: "-20px" }}
+      animate="show"
       variants={{
         hidden: {},
         show: { transition: { staggerChildren: 0.08 } },
