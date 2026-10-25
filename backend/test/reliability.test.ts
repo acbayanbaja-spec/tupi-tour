@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { describe, it } from "node:test";
 import { fetchRoadRoute } from "../src/geo.js";
-import { buildItinerary } from "../src/itinerary.js";
+import { buildItinerary, parseTimeToMinutes } from "../src/itinerary.js";
 import { initDb, store } from "../src/store.js";
 import type { TouristSpot } from "../src/types.js";
 import { getTupiWeather } from "../src/weather.js";
@@ -424,4 +424,48 @@ describe("Tupi Tour Comprehensive Durability, Security & Feature Tests", async (
       assert.match(history[0].reason, /First verified review/i);
     });
   });
+
+  describe("12. Custom Departure Time (e.g. 1:00 PM Afternoon Tour) and Exact Scheduling", () => {
+    it("correctly parses 1pm, 1:00 PM, and 13:00 to 780 minutes", () => {
+      assert.equal(parseTimeToMinutes("13:00"), 780, "13:00 must parse to 780 minutes");
+      assert.equal(parseTimeToMinutes("1:00 PM"), 780, "1:00 PM must parse to 780 minutes");
+      assert.equal(parseTimeToMinutes("1pm"), 780, "1pm must parse to 780 minutes");
+      assert.equal(parseTimeToMinutes("1:00"), 780, "1:00 (without AM/PM) should default to afternoon 1:00 PM for day tours");
+    });
+
+    it("builds an exact 4-hour afternoon tour starting at 1:00 PM and ending at 5:00 PM", async () => {
+      const res = await buildItinerary({
+        startTime: "13:00",
+        endTime: "17:00",
+        hours: 4,
+        budget: 1000,
+        interests: ["agri-tourism", "nature"],
+        travelers: 2,
+        transport: "tricycle",
+        intensity: "moderate",
+      });
+
+      assert.equal(res.startTime, "01:00 PM", "Start time must be 01:00 PM");
+      assert.equal(res.endTime, "05:00 PM", "End time must be 05:00 PM");
+      assert.equal(res.hours, 4, "Effective hours must be exactly 4");
+      assert.ok(res.title.includes("Afternoon Tour"), "Title should reflect afternoon tour");
+      assert.equal(res.budget.withinBudget, true, "Should be within budget of 1000");
+
+      // Verify schedule blocks
+      assert.ok(res.schedule.length >= 3, "Schedule must have stops and return");
+      const firstStop = res.schedule[0];
+      assert.match(firstStop.time, /01:[0-3][0-9] PM/, "First stop arrival should be shortly after 1:00 PM");
+
+      const lastBlock = res.schedule[res.schedule.length - 1];
+      assert.equal(lastBlock.kind, "return", "Last block must be return arrival");
+      assert.equal(lastBlock.time, "05:00 PM", "Must return promptly at 05:00 PM");
+
+      // Verify afternoon merienda break is included
+      const breakBlock = res.schedule.find((b) => b.kind === "break");
+      if (breakBlock) {
+        assert.ok(breakBlock.title.toLowerCase().includes("afternoon") || breakBlock.title.toLowerCase().includes("merienda"), "Break block should be afternoon-themed");
+      }
+    });
+  });
+
 });

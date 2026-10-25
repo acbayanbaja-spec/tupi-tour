@@ -95,10 +95,22 @@ function formatTimeBadge(t: string): string {
 }
 
 const COMMON_TIME_PRESETS = [
-  { label: "9:00 AM – 3:00 PM (6 hrs)", start: "09:00", end: "15:00", hours: 6 },
-  { label: "8:00 AM – 1:00 PM (5 hrs)", start: "08:00", end: "13:00", hours: 5 },
-  { label: "8:00 AM – 12:00 PM (4 hrs)", start: "08:00", end: "12:00", hours: 4 },
-  { label: "8:00 AM – 4:00 PM (8 hrs)", start: "08:00", end: "16:00", hours: 8 },
+  { label: "1:00 PM – 5:00 PM (4 hrs Afternoon)", start: "13:00", end: "17:00", hours: 4 },
+  { label: "1:00 PM – 6:00 PM (5 hrs Sunset)", start: "13:00", end: "18:00", hours: 5 },
+  { label: "1:00 PM – 4:00 PM (3 hrs Express)", start: "13:00", end: "16:00", hours: 3 },
+  { label: "9:00 AM – 3:00 PM (6 hrs Day)", start: "09:00", end: "15:00", hours: 6 },
+  { label: "8:00 AM – 1:00 PM (5 hrs Morning)", start: "08:00", end: "13:00", hours: 5 },
+  { label: "8:00 AM – 12:00 PM (4 hrs Morning)", start: "08:00", end: "12:00", hours: 4 },
+  { label: "8:00 AM – 4:00 PM (8 hrs Full Day)", start: "08:00", end: "16:00", hours: 8 },
+];
+
+const POPULAR_DEPARTURE_TIMES = [
+  { label: "1:00 PM ★", desc: "1pm Afternoon Tour", value: "13:00" },
+  { label: "8:00 AM", desc: "Early Morning", value: "08:00" },
+  { label: "9:00 AM", desc: "Morning Tour", value: "09:00" },
+  { label: "10:00 AM", desc: "Mid-Morning", value: "10:00" },
+  { label: "1:30 PM", desc: "Afternoon", value: "13:30" },
+  { label: "2:00 PM", desc: "Afternoon", value: "14:00" },
 ];
 
 export default function PlannerPage() {
@@ -326,7 +338,7 @@ export default function PlannerPage() {
                 </div>
               </div>
 
-              {/* Start Time */}
+              {/* Start Time / Departure Time */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
                   Departure Time
@@ -340,12 +352,35 @@ export default function PlannerPage() {
                     className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
                   />
                 </div>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {POPULAR_DEPARTURE_TIMES.map((chip) => {
+                    const isSelected = startTime === chip.value;
+                    return (
+                      <button
+                        key={chip.value}
+                        type="button"
+                        onClick={() => handleStartTimeChange(chip.value)}
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold transition ${
+                          isSelected
+                            ? "bg-forest text-cream ring-1 ring-forest"
+                            : "bg-white text-forest/80 border border-forest/10 hover:bg-cream"
+                        }`}
+                        title={`Set departure to ${chip.desc}`}
+                      >
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
                 <span className="mt-1 block text-[11px] text-forest/60">
                   Starts at <strong className="text-forest">{formatTimeBadge(startTime)}</strong>
+                  {startMin >= 12 * 60 && (
+                    <span className="ml-1 text-amber-700 font-semibold">(Afternoon Tour)</span>
+                  )}
                 </span>
               </div>
 
-              {/* End Time */}
+              {/* End Time / Return Time */}
               <div>
                 <label className="block text-xs font-semibold uppercase tracking-wider text-forest/80">
                   Return Time
@@ -358,6 +393,28 @@ export default function PlannerPage() {
                     onChange={(e) => handleEndTimeChange(e.target.value)}
                     className="w-full rounded-xl border border-forest/15 px-3.5 py-2.5 pl-10 text-sm font-semibold"
                   />
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {[3, 4, 5, 6].map((h) => {
+                    const targetEndMin = Math.min(23 * 60 + 59, startMin + h * 60);
+                    const targetEndStr = minutesToTimeString(targetEndMin);
+                    const isSelected = endTime === targetEndStr;
+                    return (
+                      <button
+                        key={h}
+                        type="button"
+                        onClick={() => handleEndTimeChange(targetEndStr)}
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-semibold transition ${
+                          isSelected
+                            ? "bg-forest text-cream ring-1 ring-forest"
+                            : "bg-white text-forest/80 border border-forest/10 hover:bg-cream"
+                        }`}
+                        title={`Return after ${h} hours`}
+                      >
+                        {formatTimeBadge(targetEndStr)}
+                      </button>
+                    );
+                  })}
                 </div>
                 <span className="mt-1 block text-[11px] text-forest/60">
                   Returns by <strong className="text-forest">{formatTimeBadge(endTime)}</strong>
@@ -385,13 +442,22 @@ export default function PlannerPage() {
             </div>
 
             {/* Live Timing Status Banner */}
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-cream/70 px-4 py-2 text-xs text-forest">
-              <span>
-                Schedule Window: <strong className="font-semibold">{formatTimeBadge(startTime)} – {formatTimeBadge(endTime)}</strong>
-              </span>
-              <span className="rounded-full bg-forest px-2.5 py-0.5 font-bold text-cream">
-                {customHours} Hours Duration
-              </span>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-cream/70 px-4 py-2.5 text-xs text-forest">
+              <div className="flex items-center gap-2">
+                <Clock size={15} className="text-forest/70" />
+                <span>
+                  Schedule Window: <strong className="font-semibold">{formatTimeBadge(startTime)} – {formatTimeBadge(endTime)}</strong> ({customHours} hrs total)
+                </span>
+              </div>
+              {startMin >= 12 * 60 ? (
+                <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
+                  ☀️ Afternoon Tour · Merienda & fruit shake break included
+                </span>
+              ) : (
+                <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                  🌿 Morning / Day Tour · Mountain breeze & sightseeing
+                </span>
+              )}
             </div>
           </div>
 
