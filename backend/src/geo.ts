@@ -38,6 +38,10 @@ export function isWithinTupi(lat: number, lng: number): boolean {
   );
 }
 
+export function isWithinPhilippines(lat: number, lng: number): boolean {
+  return lat >= 4.0 && lat <= 22.0 && lng >= 115.0 && lng <= 128.0;
+}
+
 export function haversineKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;

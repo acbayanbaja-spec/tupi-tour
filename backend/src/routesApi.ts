@@ -7,7 +7,7 @@ import { optionalAuth, requireAuth, requireRole, type AuthedRequest } from "./au
 import { chatTupi } from "./chatbot.js";
 import { config } from "./config.js";
 import { checkDbReadiness } from "./db/pool.js";
-import { enrichSpot, enrichSpots, fetchRoadRoute, haversineKm, isWithinTupi, recommend, searchSpots, TUPI_BOUNDS, TUPI_CENTER, TUPI_BARANGAYS } from "./geo.js";
+import { enrichSpot, enrichSpots, fetchRoadRoute, haversineKm, isWithinPhilippines, isWithinTupi, recommend, searchSpots, TUPI_BOUNDS, TUPI_CENTER, TUPI_BARANGAYS } from "./geo.js";
 import { buildItinerary } from "./itinerary.js";
 import { spotRating, store } from "./store.js";
 import type { SavedRoute, TouristSpot, VerificationStatus } from "./types.js";
@@ -229,13 +229,21 @@ api.get("/routes/directions", optionalAuth, async (req: Request, res: Response) 
   if (!isWithinTupi(toLat, toLng)) {
     return res.status(400).json({ error: "Directions are exclusively for destinations within Tupi, South Cotabato." });
   }
-  if (!isWithinTupi(fromLat, fromLng)) {
+  // Support GPS origins anywhere in the Philippines leading to Tupi
+  if (!isWithinPhilippines(fromLat, fromLng)) {
     fromLat = TUPI_CENTER.lat;
     fromLng = TUPI_CENTER.lng;
   }
 
   const route = await fetchRoadRoute({ lat: fromLat, lng: fromLng }, { lat: toLat, lng: toLng });
-  res.json(route);
+  const mode = String(req.query.mode || "car").toLowerCase();
+  let adjustedMins = route.durationMinutes;
+  if (mode === "motorcycle") {
+    adjustedMins = Math.max(4, Math.round(route.durationMinutes * 0.85));
+  } else if (mode === "tricycle") {
+    adjustedMins = Math.max(6, Math.round(route.durationMinutes * 1.3));
+  }
+  res.json({ ...route, durationMinutes: adjustedMins, mode });
 });
 
 // Feature 3: Nearby Tourist Spot Discovery

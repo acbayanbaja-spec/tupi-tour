@@ -49,6 +49,8 @@ export function parseTimeToMinutes(timeStr?: string): number {
     if (isNaN(h)) h = 8;
     if (isPM && h < 12) h += 12;
     if (isAM && h === 12) h = 0;
+    // Default 1:00 - 6:00 without explicit AM/PM to afternoon (13:00 - 18:00) for tourist day tours
+    if (!isAM && !isPM && h >= 1 && h <= 6) h += 12;
     return Math.max(0, Math.min(24 * 60 - 1, h * 60 + m));
   }
   const val = parseFloat(clean);
@@ -56,6 +58,7 @@ export function parseTimeToMinutes(timeStr?: string): number {
     let h = Math.floor(val);
     if (isPM && h < 12) h += 12;
     if (isAM && h === 12) h = 0;
+    if (!isAM && !isPM && h >= 1 && h <= 6) h += 12;
     return Math.max(0, Math.min(24 * 60 - 1, h * 60));
   }
   return 8 * 60;
@@ -245,15 +248,17 @@ async function generateAiItineraryNotes(
   endTimeStr: string,
   effectiveHours: number
 ): Promise<string> {
+  const isAfternoon = parseTimeToMinutes(startTimeStr) >= 12 * 60;
+  const timeContext = isAfternoon ? "afternoon" : "morning/day";
   const prompt = `You are the Tupi Tour AI Assistant for Tupi, South Cotabato, Philippines.
-The traveler has requested a tour from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hours) for ${input.travelers} traveler(s), traveling via ${input.transport} at a ${input.intensity} pace.
+The traveler has requested a ${timeContext} tour from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hours) for ${input.travelers} traveler(s), traveling via ${input.transport} at a ${input.intensity} pace.
 Their stated total budget is PHP ${input.budget}. The estimated total cost is PHP ${totalCost} (PHP ${remainingBudget} remaining).
 Planned stops from the verified municipal catalog: ${rankedNames.join(", ")}.
 
 Provide 2-3 concise, practical sentences with authentic local tips for Tupi:
 - Highlight that the schedule runs from ${startTimeStr} to ${endTimeStr} and fits within their PHP ${input.budget} budget.
 - Remind about fruit tasting along the Kablon highway and Mt. Matutum foothill breezes.
-- Remind to carry cash for fruit purchases and on-site entrance verification.
+${isAfternoon ? "- Note that farm stops in Tupi generally conclude visiting hours around 5:00 PM to 6:00 PM.\n" : ""}- Remind to carry cash for fruit purchases and on-site entrance verification.
 Do not invent fictional destinations or mention places outside Tupi.`;
 
   try {
@@ -282,7 +287,9 @@ Do not invent fictional destinations or mention places outside Tupi.`;
     // Fall through to deterministic fallback
   }
 
-  return `Planned stops: ${rankedNames.join(", ") || "Tupi town proper and highland viewpoints"}. This schedule is calibrated from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hrs) and budgeted at ₱${totalCost.toLocaleString()} (within your ₱${input.budget.toLocaleString()} target with ₱${remainingBudget.toLocaleString()} remaining). Bring cash for roadside fruit stalls in Kablon and a light jacket for cool Mt. Matutum foothill breezes.`;
+  const tourType = isAfternoon ? "afternoon tour" : "tour";
+  const farmHoursNote = isAfternoon ? "Most Tupi farms conclude visitor admissions between 5:00 PM and 6:00 PM. " : "";
+  return `Planned stops: ${rankedNames.join(", ") || "Tupi town proper and highland viewpoints"}. This ${tourType} is calibrated from ${startTimeStr} to ${endTimeStr} (${effectiveHours} hrs) and budgeted at ₱${totalCost.toLocaleString()} (within your ₱${input.budget.toLocaleString()} target with ₱${remainingBudget.toLocaleString()} remaining). ${farmHoursNote}Bring cash for roadside fruit stalls in Kablon and a light jacket for cool Mt. Matutum foothill breezes.`;
 }
 
 export async function buildItinerary(input: PlannerInput) {
@@ -464,12 +471,17 @@ export async function buildItinerary(input: PlannerInput) {
     // Insert exactly one meal or fruit break at mid-day
     if (breakMinutes > 0 && i === breakAfterIndex) {
       const breakTime = formatClock(cursor);
+      const isAfternoonBreak = cursor >= 12 * 60;
       blocks.push({
         time: breakTime,
-        title: "Local Fruit & Refreshment Break (Kablon highway fruit stalls & cafe)",
+        title: isAfternoonBreak
+          ? "Afternoon Merienda & Fresh Fruit Shake Break (Kablon roadside fruit stalls & cafe)"
+          : "Local Fruit & Refreshment Break (Kablon highway fruit stalls & cafe)",
         kind: "break",
         minutes: breakMinutes,
-        note: `Enjoy authentic Tupi pineapples and refreshments. Budgeted: ~₱${Math.round(food / input.travelers)} per person.`,
+        note: isAfternoonBreak
+          ? `Enjoy fresh Tupi pineapples, halo-halo, or fruit shakes along the highway. Budgeted: ~₱${Math.round(food / input.travelers)} per person.`
+          : `Enjoy authentic Tupi pineapples and refreshments. Budgeted: ~₱${Math.round(food / input.travelers)} per person.`,
       });
       cursor += breakMinutes;
     }
@@ -545,8 +557,13 @@ export async function buildItinerary(input: PlannerInput) {
     ? `This itinerary is calibrated to match your exact budget of ₱${input.budget.toLocaleString()}.`
     : `This itinerary is carefully tailored to your ₱${input.budget.toLocaleString()} budget (Estimated total: ₱${total.toLocaleString()}, leaving ₱${remainingBudget.toLocaleString()} remaining).`;
 
+  const isAfternoon = startMinutes >= 12 * 60;
+  const tourTitle = isAfternoon
+    ? `Tupi Afternoon Tour (${startTimeStr} – ${endTimeStr})`
+    : `Tupi Tour (${startTimeStr} – ${endTimeStr})`;
+
   return {
-    title: `Tupi Tour (${startTimeStr} – ${endTimeStr})`,
+    title: tourTitle,
     generatedAt: new Date().toISOString(),
     hours: effectiveHours,
     targetMinutes,
@@ -556,6 +573,9 @@ export async function buildItinerary(input: PlannerInput) {
     destinationsCount: spotCount,
     assumptions: [
       `Custom tour schedule strictly calibrated for your ${startTimeStr} to ${endTimeStr} window (${effectiveHours} hours total).`,
+      ...(isAfternoon
+        ? ["Afternoon schedule tailored to match Tupi farm operating hours (most farms welcome visitors until 5:00 PM – 6:00 PM)."]
+        : []),
       "Travel times use estimated road distance and local speed profiles.",
       "Entrance fees are verified municipal catalog rates; free viewpoints included to fit your budget.",
       "Operating hours reflect verified farm and roadside fruit stall schedules in Tupi.",
