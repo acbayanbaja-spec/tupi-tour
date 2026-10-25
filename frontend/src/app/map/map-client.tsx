@@ -11,8 +11,6 @@ import {
   Compass,
   Crosshair,
   ExternalLink,
-  Eye,
-  EyeOff,
   Globe,
   Layers,
   MapPin,
@@ -29,7 +27,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   MapContainer,
   Marker,
-  Polygon,
   Polyline,
   Popup,
   TileLayer,
@@ -42,7 +39,6 @@ import {
   PHILIPPINES_CENTER,
   TUPI_BOUNDS,
   TUPI_CENTER,
-  TUPI_POLYGON_LATLNGS,
   isWithinPhilippines,
   isWithinTupi,
 } from "@/data/tupi-boundary";
@@ -216,7 +212,6 @@ export default function MapPage() {
   const [search, setSearch] = useState("");
   const [selectedCat, setSelectedCat] = useState("all");
   const [mapStyle, setMapStyle] = useState<MapStyle>("streets");
-  const [showBoundary, setShowBoundary] = useState(true);
   const [travelMode, setTravelMode] = useState<TravelMode>("car");
   const [showGuidanceSteps, setShowGuidanceSteps] = useState(false);
 
@@ -415,24 +410,6 @@ export default function MapPage() {
             triggerReset={resetKey}
           />
 
-          {/* Official Tupi Municipal Boundary Line Overlay */}
-          {showBoundary && (
-            <Polygon
-              positions={TUPI_POLYGON_LATLNGS}
-              pathOptions={{
-                color: "#059669",
-                weight: 3,
-                dashArray: "6, 6",
-                fillColor: "#10b981",
-                fillOpacity: mapStyle === "satellite" ? 0.08 : 0.04,
-              }}
-            >
-              <Tooltip sticky direction="top" className="font-sans text-xs font-semibold">
-                Municipality of Tupi, South Cotabato
-              </Tooltip>
-            </Polygon>
-          )}
-
           {/* User Starting GPS Marker */}
           {origin && (
             <Marker
@@ -609,18 +586,6 @@ export default function MapPage() {
           >
             <Globe size={13} className="text-emerald-700" />
             <span className="hidden md:inline">Philippines</span>
-          </button>
-
-          {/* Toggle Boundary Stroke */}
-          <button
-            type="button"
-            onClick={() => setShowBoundary((v) => !v)}
-            className={`p-1.5 rounded-full border border-forest/15 shadow-md transition ${
-              showBoundary ? "bg-emerald-50 text-emerald-800" : "bg-white text-forest/40"
-            }`}
-            title="Toggle Tupi municipal boundary line"
-          >
-            {showBoundary ? <Eye size={14} /> : <EyeOff size={14} />}
           </button>
         </div>
 
